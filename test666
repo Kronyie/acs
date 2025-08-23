@@ -21,6 +21,10 @@ local crystalCount = 0
 local frozen = false
 local noclipEnabled = false
 
+-- Spider vars
+local spiderState = "🟣"
+local spiderTeleporting = false
+
 -- Target mobs (priority)
 local targetMobs = {
     ["royalSpiderModel"] = 1,
@@ -46,7 +50,7 @@ local ignoreList = {"SwordTroop", "ArcherTroop", "WizardTroop", "Mystical Bag"}
 --// GUI Setup
 local ScreenGui = Instance.new("ScreenGui", LocalPlayer.PlayerGui)
 local Frame = Instance.new("Frame", ScreenGui)
-Frame.Size = UDim2.new(0, 250, 0, 300)
+Frame.Size = UDim2.new(0, 250, 0, 320)
 Frame.Position = UDim2.new(0, 20, 0.5, -150)
 Frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 Frame.BorderSizePixel = 0
@@ -80,29 +84,37 @@ StatusLabel.Text = "Target: None"
 StatusLabel.BackgroundTransparency = 1
 StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
 
+-- Spider Status
+local SpiderStatusLabel = Instance.new("TextLabel", Frame)
+SpiderStatusLabel.Size = UDim2.new(1, -20, 0, 20)
+SpiderStatusLabel.Position = UDim2.new(0, 10, 0, 150)
+SpiderStatusLabel.Text = "Spider Status: 🟣"
+SpiderStatusLabel.BackgroundTransparency = 1
+SpiderStatusLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
+
 -- Exit
 local ExitButton = Instance.new("TextButton", Frame)
 ExitButton.Size = UDim2.new(1, -20, 0, 25)
-ExitButton.Position = UDim2.new(0, 10, 0, 155)
+ExitButton.Position = UDim2.new(0, 10, 0, 175)
 ExitButton.Text = "Exit Script"
 ExitButton.BackgroundColor3 = Color3.fromRGB(100, 0, 0)
 
 -- Teleport GUI
 local TPButton = Instance.new("TextButton", Frame)
 TPButton.Size = UDim2.new(1, -20, 0, 25)
-TPButton.Position = UDim2.new(0, 10, 0, 185)
+TPButton.Position = UDim2.new(0, 10, 0, 205)
 TPButton.Text = "Set Teleport Location"
 TPButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
 
 local StatusIndicator = Instance.new("Frame", Frame)
 StatusIndicator.Size = UDim2.new(0, 20, 0, 20)
-StatusIndicator.Position = UDim2.new(0, 10, 0, 215)
+StatusIndicator.Position = UDim2.new(0, 10, 0, 235)
 StatusIndicator.BackgroundColor3 = Color3.fromRGB(255,0,0)
 StatusIndicator.BorderSizePixel = 0
 
 local CountdownLabel = Instance.new("TextLabel", Frame)
 CountdownLabel.Size = UDim2.new(0, 100, 0, 20)
-CountdownLabel.Position = UDim2.new(0, 40, 0, 215)
+CountdownLabel.Position = UDim2.new(0, 40, 0, 235)
 CountdownLabel.BackgroundTransparency = 1
 CountdownLabel.TextColor3 = Color3.fromRGB(255,255,255)
 CountdownLabel.TextScaled = true
@@ -111,14 +123,14 @@ CountdownLabel.Text = "Timer: 0s"
 -- Freeze Button
 local FreezeButton = Instance.new("TextButton", Frame)
 FreezeButton.Size = UDim2.new(1, -20, 0, 25)
-FreezeButton.Position = UDim2.new(0, 10, 0, 240)
+FreezeButton.Position = UDim2.new(0, 10, 0, 260)
 FreezeButton.Text = "Freeze: OFF"
 FreezeButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 
 -- Noclip Button
 local NoclipButton = Instance.new("TextButton", Frame)
 NoclipButton.Size = UDim2.new(1, -20, 0, 25)
-NoclipButton.Position = UDim2.new(0, 10, 0, 265)
+NoclipButton.Position = UDim2.new(0, 10, 0, 290)
 NoclipButton.Text = "Noclip: OFF"
 NoclipButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 
@@ -191,6 +203,18 @@ local function countNearbyGuardians(root, radius)
     return count
 end
 
+local function countNearbySpiders(root, radius)
+    for _, m in ipairs(workspace:GetDescendants()) do
+        if m:IsA("Model") and m.Name == "spiderModel" then
+            local hrp = m:FindFirstChild("HumanoidRootPart")
+            if hrp and (hrp.Position - root.Position).Magnitude <= radius then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 local function findTeleportCFrame()
     return teleportCFrame or CFrame.new(0,20,0)
 end
@@ -205,6 +229,51 @@ RunService.RenderStepped:Connect(function()
                     part.CanCollide = false
                 end
             end
+        end
+    end
+end)
+
+--// Spider Status Loop
+task.spawn(function()
+    while task.wait(1) do
+        local hrp = getHumanoidRootPart()
+        if not hrp or spiderTeleporting then continue end
+
+        local spiderNearby = countNearbySpiders(hrp, attackRange)
+
+        if spiderNearby and spiderState ~= "🟢" then
+            spiderState = "🟢"
+            SpiderStatusLabel.Text = "Spider Status: 🟢"
+            SpiderStatusLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+
+        elseif not spiderNearby and spiderState == "🟢" then
+            spiderState = "🔴"
+            SpiderStatusLabel.Text = "Spider Status: 🔴"
+            SpiderStatusLabel.TextColor3 = Color3.fromRGB(255, 0, 0)
+            spiderTeleporting = true
+
+            local originalCF = hrp.CFrame
+            if teleportCFrame then
+                hrp.Parent:PivotTo(teleportCFrame)
+            end
+
+            local hum = hrp.Parent:FindFirstChildOfClass("Humanoid")
+            local ws,jp
+            if hum then ws,jp = hum.WalkSpeed,hum.JumpPower; hum.WalkSpeed,hum.JumpPower=0,0 end
+
+            for i = 60,1,-1 do
+                CountdownLabel.Text = "Timer: "..i.."s"
+                task.wait(1)
+            end
+            CountdownLabel.Text = "Timer: 0s"
+
+            hrp.Parent:PivotTo(originalCF)
+            if hum and not frozen then hum.WalkSpeed,hum.JumpPower = ws or 16, jp or 50 end
+
+            spiderState = "🟣"
+            SpiderStatusLabel.Text = "Spider Status: 🟣"
+            SpiderStatusLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
+            spiderTeleporting = false
         end
     end
 end)
@@ -247,7 +316,7 @@ task.spawn(function()
     while true do
         local hrp = getHumanoidRootPart()
         if hrp then
-            -- Auto-Teleport
+            -- Auto-Teleport (crystalGuardianModel)
             crystalCount = countNearbyGuardians(hrp, nearbyRadius)
             if crystalCount >= 5 and autoTeleportEnabled and not isTeleporting then
                 isTeleporting = true
