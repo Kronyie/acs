@@ -1,0 +1,244 @@
+--// Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+local Event = ReplicatedStorage:WaitForChild("Event")
+
+--// Variables
+local wandEnabled = false
+local attackSpeed = 0.3
+local attackRange = 100
+local multiAttacks = 3
+local lastAutoAttack = 0
+
+local autoTeleportEnabled = true
+local nearbyRadius = 150
+local returnDelay = 5
+local isTeleporting = false
+local teleportCFrame = nil
+local crystalCount = 0
+
+-- Target mobs (priority)
+local targetMobs = {
+    ["royalSpiderModel"] = 1,
+    ["spiderModel"] = 2,
+    ["crystalGuardianModel"] = 3,
+    ["crystalArcherModel"] = 4,
+    ["Sheds"] = 5,
+    ["spiderDen8183Sheds"] = 6
+}
+
+-- Colors for status label
+local mobColors = {
+    ["royalSpiderModel"] = Color3.fromRGB(255, 0, 0),
+    ["spiderModel"] = Color3.fromRGB(200, 100, 100),
+    ["crystalGuardianModel"] = Color3.fromRGB(0, 255, 0),
+    ["crystalArcherModel"] = Color3.fromRGB(0, 200, 200),
+    ["Sheds"] = Color3.fromRGB(200, 200, 100),
+    ["spiderDen8183Sheds"] = Color3.fromRGB(150, 50, 255)
+}
+
+local ignoreList = {"SwordTroop", "ArcherTroop", "WizardTroop", "Mystical Bag"}
+
+--// GUI Setup
+local ScreenGui = Instance.new("ScreenGui", LocalPlayer.PlayerGui)
+local Frame = Instance.new("Frame", ScreenGui)
+Frame.Size = UDim2.new(0, 250, 0, 230)
+Frame.Position = UDim2.new(0, 20, 0.5, -115)
+Frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+Frame.BorderSizePixel = 0
+
+-- Wand Toggle
+local ToggleButton = Instance.new("TextButton", Frame)
+ToggleButton.Size = UDim2.new(1, -20, 0, 30)
+ToggleButton.Position = UDim2.new(0, 10, 0, 10)
+ToggleButton.Text = "Toggle Wand: OFF"
+ToggleButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+
+-- Attack Speed
+local SpeedBox = Instance.new("TextBox", Frame)
+SpeedBox.Size = UDim2.new(1, -20, 0, 30)
+SpeedBox.Position = UDim2.new(0, 10, 0, 50)
+SpeedBox.PlaceholderText = "Attack Speed (0.1+)"
+SpeedBox.Text = tostring(attackSpeed)
+
+-- Attack Range
+local RangeBox = Instance.new("TextBox", Frame)
+RangeBox.Size = UDim2.new(1, -20, 0, 30)
+RangeBox.Position = UDim2.new(0, 10, 0, 90)
+RangeBox.PlaceholderText = "Attack Range"
+RangeBox.Text = tostring(attackRange)
+
+-- Wand Status
+local StatusLabel = Instance.new("TextLabel", Frame)
+StatusLabel.Size = UDim2.new(1, -20, 0, 20)
+StatusLabel.Position = UDim2.new(0, 10, 0, 130)
+StatusLabel.Text = "Target: None"
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+
+-- Exit
+local ExitButton = Instance.new("TextButton", Frame)
+ExitButton.Size = UDim2.new(1, -20, 0, 25)
+ExitButton.Position = UDim2.new(0, 10, 0, 155)
+ExitButton.Text = "Exit Script"
+ExitButton.BackgroundColor3 = Color3.fromRGB(100, 0, 0)
+
+-- Teleport GUI
+local TPButton = Instance.new("TextButton", Frame)
+TPButton.Size = UDim2.new(1, -20, 0, 25)
+TPButton.Position = UDim2.new(0, 10, 0, 185)
+TPButton.Text = "Set Teleport Location"
+TPButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+
+local StatusIndicator = Instance.new("Frame", Frame)
+StatusIndicator.Size = UDim2.new(0, 20, 0, 20)
+StatusIndicator.Position = UDim2.new(0, 10, 0, 210)
+StatusIndicator.BackgroundColor3 = Color3.fromRGB(255,0,0) -- red = not set
+StatusIndicator.BorderSizePixel = 0
+
+local CountdownLabel = Instance.new("TextLabel", Frame)
+CountdownLabel.Size = UDim2.new(0, 100, 0, 20)
+CountdownLabel.Position = UDim2.new(0, 40, 0, 210)
+CountdownLabel.BackgroundTransparency = 1
+CountdownLabel.TextColor3 = Color3.fromRGB(255,255,255)
+CountdownLabel.TextScaled = true
+CountdownLabel.Text = "Timer: 0s"
+
+--// Button Logic
+ToggleButton.MouseButton1Click:Connect(function()
+    wandEnabled = not wandEnabled
+    ToggleButton.Text = "Toggle Wand: " .. (wandEnabled and "ON" or "OFF")
+    ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Color3.fromRGB(50, 50, 50)
+end)
+
+SpeedBox.FocusLost:Connect(function()
+    local val = tonumber(SpeedBox.Text)
+    if val and val >= 0.1 then
+        attackSpeed = val
+    end
+end)
+
+RangeBox.FocusLost:Connect(function()
+    local val = tonumber(RangeBox.Text)
+    if val and val > 0 then
+        attackRange = val
+    end
+end)
+
+ExitButton.MouseButton1Click:Connect(function()
+    ScreenGui:Destroy()
+    script:Destroy()
+end)
+
+TPButton.MouseButton1Click:Connect(function()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        teleportCFrame = hrp.CFrame
+        StatusIndicator.BackgroundColor3 = Color3.fromRGB(0,255,0)
+        print("[AutoTP] Teleport location saved.")
+    end
+end)
+
+--// Helper Functions
+local function getHumanoidRootPart()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function countNearbyGuardians(root, radius)
+    local count = 0
+    for _, m in ipairs(workspace:GetDescendants()) do
+        if m:IsA("Model") and m.Name == "crystalGuardianModel" then
+            local hrp = m:FindFirstChild("HumanoidRootPart")
+            if hrp and (hrp.Position - root.Position).Magnitude <= radius then
+                count += 1
+                if count >= 5 then break end
+            end
+        end
+    end
+    return count
+end
+
+local function findTeleportCFrame()
+    return teleportCFrame or CFrame.new(0,20,0)
+end
+
+--// Attack Loop
+task.spawn(function()
+    local lastCount = -1
+    while true do
+        local hrp = getHumanoidRootPart()
+        if hrp then
+            -- Check auto teleport
+            crystalCount = countNearbyGuardians(hrp, nearbyRadius)
+            if crystalCount >= 5 and autoTeleportEnabled and not isTeleporting then
+                isTeleporting = true
+                local originalCF = hrp.CFrame
+                hrp.Parent:PivotTo(findTeleportCFrame())
+                local hum = hrp.Parent:FindFirstChildOfClass("Humanoid")
+                local ws, jp
+                if hum then ws, jp = hum.WalkSpeed, hum.JumpPower; hum.WalkSpeed, hum.JumpPower = 0,0 end
+
+                for i = returnDelay,1,-1 do
+                    CountdownLabel.Text = "Timer: "..i.."s"
+                    task.wait(1)
+                end
+                CountdownLabel.Text = "Timer: 0s"
+
+                hrp.Parent:PivotTo(originalCF)
+                if hum then hum.WalkSpeed, hum.JumpPower = ws or 16, jp or 50 end
+                isTeleporting = false
+            end
+        end
+
+        -- Gather mobs
+        if wandEnabled and hrp then
+            local mobs = {}
+            for _, obj in pairs(workspace:GetDescendants()) do
+                if obj:IsA("Model") and obj:FindFirstChild("HumanoidRootPart") then
+                    if targetMobs[obj.Name] then
+                        local ignored = false
+                        for _, ignore in ipairs(ignoreList) do
+                            if string.find(obj.Name, ignore) then ignored = true break end
+                        end
+                        if not ignored then
+                            local dist = (obj.HumanoidRootPart.Position - hrp.Position).Magnitude
+                            if dist < attackRange then
+                                table.insert(mobs, {model=obj, priority=targetMobs[obj.Name], dist=dist})
+                            end
+                        end
+                    end
+                end
+            end
+            table.sort(mobs,function(a,b)
+                if a.priority==b.priority then return a.dist<b.dist else return a.priority<b.priority end
+            end)
+
+            if #mobs>0 then
+                local topMob = mobs[1].model
+                StatusLabel.Text = "Target: "..topMob.Name
+                StatusLabel.TextColor3 = mobColors[topMob.Name] or Color3.fromRGB(255,255,255)
+                for _, mob in ipairs(mobs) do
+                    for i=1,multiAttacks do
+                        Event:FireServer("use","wand","place",mob.model.HumanoidRootPart.Position)
+                    end
+                end
+            else
+                local now = tick()
+                StatusLabel.Text = "Target: None"
+                StatusLabel.TextColor3 = Color3.fromRGB(255,255,0)
+                if now - lastAutoAttack >=5 then
+                    lastAutoAttack = now
+                    Event:FireServer("use","wand","place",hrp.Position + (hrp.CFrame.LookVector*10))
+                end
+            end
+        else
+            StatusLabel.Text = "Target: None"
+            StatusLabel.TextColor3 = Color3.fromRGB(255,255,0)
+        end
+
+        task.wait(attackSpeed)
+    end
+end)
