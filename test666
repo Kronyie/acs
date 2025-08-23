@@ -268,9 +268,11 @@ task.spawn(function()
                 isTeleporting = false
             end
 
-            -- Wand Attack
+            -- Wand Attack with royalSpider focus
             if wandEnabled then
                 local mobs = {}
+                local royalTarget = nil
+
                 for _, obj in pairs(workspace:GetDescendants()) do
                     if obj:IsA("Model") and obj:FindFirstChild("HumanoidRootPart") then
                         if targetMobs[obj.Name] then
@@ -282,20 +284,30 @@ task.spawn(function()
                                 local dist = (obj.HumanoidRootPart.Position - hrp.Position).Magnitude
                                 if dist < attackRange then
                                     table.insert(mobs,{model=obj,priority=targetMobs[obj.Name],dist=dist})
+                                    if obj.Name == "royalSpiderModel" then
+                                        royalTarget = obj
+                                    end
                                 end
                             end
                         end
                     end
                 end
-                table.sort(mobs,function(a,b)
-                    if a.priority==b.priority then return a.dist<b.dist else return a.priority<b.priority end
-                end)
 
-                if #mobs>0 then
-                    local topMob = mobs[1].model
+                local targetsToAttack = {}
+                if royalTarget then
+                    targetsToAttack = {{model=royalTarget}}
+                else
+                    table.sort(mobs,function(a,b)
+                        if a.priority==b.priority then return a.dist<b.dist else return a.priority<b.priority end
+                    end)
+                    targetsToAttack = mobs
+                end
+
+                if #targetsToAttack>0 then
+                    local topMob = targetsToAttack[1].model
                     StatusLabel.Text = "Target: "..topMob.Name
                     StatusLabel.TextColor3 = mobColors[topMob.Name] or Color3.fromRGB(255,255,255)
-                    for _, mob in ipairs(mobs) do
+                    for _, mob in ipairs(targetsToAttack) do
                         for i=1,multiAttacks do
                             Event:FireServer("use","wand","place",mob.model.HumanoidRootPart.Position)
                         end
