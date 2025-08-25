@@ -377,16 +377,16 @@ task.spawn(function()
                     task.wait(1)
                 end
 
-                -- Desert 200s
+                -- Desert 150s
                 hrp.Parent:PivotTo(teleportCFrameDesert)
-                for i = 200,1,-1 do
+                for i = 150,1,-1 do
                     CountdownLabel.Text = "Timer: "..i.."s"
                     task.wait(1)
                 end
 
-                -- Base 45s
+                -- Base 95s
                 hrp.Parent:PivotTo(teleportCFrameBase)
-                for i = 45,1,-1 do
+                for i = 95,1,-1 do
                     CountdownLabel.Text = "Timer: "..i.."s"
                     task.wait(1)
                 end
