@@ -384,9 +384,9 @@ task.spawn(function()
                     task.wait(1)
                 end
 
-                -- Base 95s
+                -- Base 65s
                 hrp.Parent:PivotTo(teleportCFrameBase)
-                for i = 95,1,-1 do
+                for i = 65,1,-1 do
                     CountdownLabel.Text = "Timer: "..i.."s"
                     task.wait(1)
                 end
