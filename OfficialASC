@@ -17,14 +17,14 @@ local autoTeleportEnabled = true
 local nearbyRadius = 150
 local returnDelay = 5
 local isTeleporting = false
-local teleportCFrame = nil
+local teleportCFrameBase = nil
+local teleportCFrameDesert = nil
 local crystalCount = 0
 local frozen = false
 local noclipEnabled = false
 
 -- Spider vars
 local spiderState = "🟣"
-local spiderTeleporting = false
 local spiderDisappeared = false
 
 -- Target mobs (priority)
@@ -111,7 +111,7 @@ RangeBox.TextSize = 14
 RangeBox.Parent = InputRow
 Instance.new("UICorner", RangeBox).CornerRadius = UDim.new(0, 6)
 
--- NEW WalkSpeed Box
+-- WalkSpeed Box
 local WalkSpeedBox = Instance.new("TextBox")
 WalkSpeedBox.Size = UDim2.new(0.33, -2, 1, 0)
 WalkSpeedBox.Text = tostring(walkSpeed)
@@ -133,7 +133,6 @@ WalkSpeedBox.FocusLost:Connect(function(enterPressed)
     end
 end)
 
--- Auto-set WalkSpeed on execution
 task.defer(function()
     local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
     local hum = char:WaitForChild("Humanoid")
@@ -159,31 +158,58 @@ SpiderStatusLabel.Font = Enum.Font.Gotham
 SpiderStatusLabel.TextSize = 16
 SpiderStatusLabel.Parent = MainFrame
 
--- (rest of script continues unchanged...)
-
-
--- Teleport Button
-local TPButton = Instance.new("TextButton")
-TPButton.Size = UDim2.new(0.9, 0, 0, 25)
-TPButton.Text = "Set Teleport Location"
-TPButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
-TPButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-TPButton.Font = Enum.Font.Gotham
-TPButton.TextSize = 14
-TPButton.Parent = MainFrame
-Instance.new("UICorner", TPButton).CornerRadius = UDim.new(0, 6)
-
-local StatusIndicator = Instance.new("Frame", MainFrame)
-StatusIndicator.Size = UDim2.new(0, 20, 0, 20)
-StatusIndicator.BackgroundColor3 = Color3.fromRGB(255,0,0)
-StatusIndicator.BorderSizePixel = 0
-
+-- Countdown Label
 local CountdownLabel = Instance.new("TextLabel", MainFrame)
 CountdownLabel.Size = UDim2.new(0, 100, 0, 20)
 CountdownLabel.BackgroundTransparency = 1
 CountdownLabel.TextColor3 = Color3.fromRGB(255,255,255)
 CountdownLabel.TextScaled = true
 CountdownLabel.Text = "Timer: 0s"
+
+-- Teleport Buttons (Base & Desert)
+local TPFrame = Instance.new("Frame")
+TPFrame.Size = UDim2.new(0.9, 0, 0, 30)
+TPFrame.BackgroundTransparency = 1
+TPFrame.Parent = MainFrame
+local TPLayout = Instance.new("UIListLayout", TPFrame)
+TPLayout.FillDirection = Enum.FillDirection.Horizontal
+TPLayout.Padding = UDim.new(0,5)
+
+local BaseButton = Instance.new("TextButton")
+BaseButton.Size = UDim2.new(0.48,0,1,0)
+BaseButton.Text = "Base"
+BaseButton.BackgroundColor3 = Color3.fromRGB(100,100,100)
+BaseButton.TextColor3 = Color3.fromRGB(255,255,255)
+BaseButton.Font = Enum.Font.Gotham
+BaseButton.TextSize = 14
+BaseButton.Parent = TPFrame
+Instance.new("UICorner", BaseButton).CornerRadius = UDim.new(0,6)
+
+local DesertButton = Instance.new("TextButton")
+DesertButton.Size = UDim2.new(0.48,0,1,0)
+DesertButton.Text = "Desert"
+DesertButton.BackgroundColor3 = Color3.fromRGB(100,100,100)
+DesertButton.TextColor3 = Color3.fromRGB(255,255,255)
+DesertButton.Font = Enum.Font.Gotham
+DesertButton.TextSize = 14
+DesertButton.Parent = TPFrame
+Instance.new("UICorner", DesertButton).CornerRadius = UDim.new(0,6)
+
+BaseButton.MouseButton1Click:Connect(function()
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        teleportCFrameBase = hrp.CFrame
+        BaseButton.BackgroundColor3 = Color3.fromRGB(0,255,0)
+    end
+end)
+
+DesertButton.MouseButton1Click:Connect(function()
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        teleportCFrameDesert = hrp.CFrame
+        DesertButton.BackgroundColor3 = Color3.fromRGB(0,255,0)
+    end
+end)
 
 -- Freeze Button
 local FreezeButton = Instance.new("TextButton")
@@ -260,15 +286,6 @@ RangeBox.FocusLost:Connect(function()
     if val and val > 0 then attackRange = val end
 end)
 
-TPButton.MouseButton1Click:Connect(function()
-    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        teleportCFrame = hrp.CFrame
-        StatusIndicator.BackgroundColor3 = Color3.fromRGB(0,255,0)
-        print("[AutoTP] Teleport location saved.")
-    end
-end)
-
 FreezeButton.MouseButton1Click:Connect(function()
     frozen = not frozen
     FreezeButton.Text = "Freeze: " .. (frozen and "ON" or "OFF")
@@ -319,10 +336,6 @@ local function countNearbySpiders(root, radius)
     return false
 end
 
-local function findTeleportCFrame()
-    return teleportCFrame or CFrame.new(0,20,0)
-end
-
 --// Noclip Loop
 RunService.RenderStepped:Connect(function()
     if noclipEnabled then
@@ -337,7 +350,7 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
---// Spider Status Loop (with disappearance teleport)
+--// Spider Disappearance Teleport Loop
 task.spawn(function()
     while task.wait(1) do
         local hrp = getHumanoidRootPart()
@@ -350,21 +363,39 @@ task.spawn(function()
             SpiderStatusLabel.TextColor3 = Color3.fromRGB(0,255,0)
             spiderDisappeared = false
         elseif not spiderNearby and not spiderDisappeared then
-            spiderState = "🔴"
-            SpiderStatusLabel.TextColor3 = Color3.fromRGB(255,0,0)
             spiderDisappeared = true
-            -- Teleport to saved location for 60s
-            if teleportCFrame then
-                local originalCF = hrp.CFrame
-                hrp.Parent:PivotTo(teleportCFrame)
-                SpiderStatusLabel.TextColor3 = Color3.fromRGB(170,0,255) -- purple while waiting
-                for i = 60,1,-1 do
+
+            local originalCF = hrp.CFrame
+            if teleportCFrameBase and teleportCFrameDesert then
+                spiderState = "🟣"
+                SpiderStatusLabel.TextColor3 = Color3.fromRGB(170,0,255)
+
+                -- Base 45s
+                hrp.Parent:PivotTo(teleportCFrameBase)
+                for i = 45,1,-1 do
                     CountdownLabel.Text = "Timer: "..i.."s"
                     task.wait(1)
                 end
-                CountdownLabel.Text = "Timer: 0s"
+
+                -- Desert 200s
+                hrp.Parent:PivotTo(teleportCFrameDesert)
+                for i = 200,1,-1 do
+                    CountdownLabel.Text = "Timer: "..i.."s"
+                    task.wait(1)
+                end
+
+                -- Base 45s
+                hrp.Parent:PivotTo(teleportCFrameBase)
+                for i = 45,1,-1 do
+                    CountdownLabel.Text = "Timer: "..i.."s"
+                    task.wait(1)
+                end
+
+                -- Back to original
                 hrp.Parent:PivotTo(originalCF)
-                SpiderStatusLabel.TextColor3 = Color3.fromRGB(170,0,255) -- purple again
+                CountdownLabel.Text = "Timer: 0s"
+                spiderState = "🔴"
+                SpiderStatusLabel.TextColor3 = Color3.fromRGB(255,0,0)
             end
         end
 
@@ -372,7 +403,7 @@ task.spawn(function()
     end
 end)
 
---// Main Loop
+--// Main Loop (Auto-Teleport for crystalGuardian & Wand Attack)
 task.spawn(function()
     while true do
         local hrp = getHumanoidRootPart()
@@ -382,7 +413,7 @@ task.spawn(function()
             if crystalCount >= 5 and autoTeleportEnabled and not isTeleporting then
                 isTeleporting = true
                 local originalCF = hrp.CFrame
-                hrp.Parent:PivotTo(findTeleportCFrame())
+                hrp.Parent:PivotTo(teleportCFrameBase)
                 local hum = hrp.Parent:FindFirstChildOfClass("Humanoid")
                 local ws,jp
                 if hum then ws,jp = hum.WalkSpeed,hum.JumpPower; hum.WalkSpeed,hum.JumpPower=0,0 end
