@@ -9,6 +9,7 @@ local Event = ReplicatedStorage:WaitForChild("Event")
 local wandEnabled = false
 local attackSpeed = 0.3
 local attackRange = 100
+local walkSpeed = 50 -- default walkspeed (auto set)
 local multiAttacks = 3
 local lastAutoAttack = 0
 
@@ -29,11 +30,12 @@ local spiderDisappeared = false
 -- Target mobs (priority)
 local targetMobs = {
     ["royalSpiderModel"] = 1,
-    ["spiderModel"] = 2,
-    ["crystalGuardianModel"] = 3,
-    ["crystalArcherModel"] = 4,
-    ["Sheds"] = 5,
-    ["spiderDen8183Sheds"] = 6
+    ["sandManModel"] = 2,
+    ["spiderModel"] = 3,
+    ["crystalGuardianModel"] = 4,
+    ["sandGeneralModel"] = 5,
+    ["Sheds"] = 6,
+    ["desertBossModel"] = 7
 }
 
 -- Colors for status label
@@ -80,7 +82,7 @@ ToggleButton.TextSize = 14
 ToggleButton.Parent = MainFrame
 Instance.new("UICorner", ToggleButton).CornerRadius = UDim.new(0, 6)
 
--- Input Row (Speed + Range)
+-- Input Row (Speed + Range + WalkSpeed)
 local InputRow = Instance.new("Frame")
 InputRow.Size = UDim2.new(0.9, 0, 0, 30)
 InputRow.BackgroundTransparency = 1
@@ -90,7 +92,7 @@ InputLayout.FillDirection = Enum.FillDirection.Horizontal
 InputLayout.Padding = UDim.new(0, 5)
 
 local SpeedBox = Instance.new("TextBox")
-SpeedBox.Size = UDim2.new(0.5, -2, 1, 0)
+SpeedBox.Size = UDim2.new(0.33, -2, 1, 0)
 SpeedBox.Text = tostring(attackSpeed)
 SpeedBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 SpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -100,7 +102,7 @@ SpeedBox.Parent = InputRow
 Instance.new("UICorner", SpeedBox).CornerRadius = UDim.new(0, 6)
 
 local RangeBox = Instance.new("TextBox")
-RangeBox.Size = UDim2.new(0.5, -2, 1, 0)
+RangeBox.Size = UDim2.new(0.33, -2, 1, 0)
 RangeBox.Text = tostring(attackRange)
 RangeBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 RangeBox.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -108,6 +110,35 @@ RangeBox.Font = Enum.Font.Gotham
 RangeBox.TextSize = 14
 RangeBox.Parent = InputRow
 Instance.new("UICorner", RangeBox).CornerRadius = UDim.new(0, 6)
+
+-- NEW WalkSpeed Box
+local WalkSpeedBox = Instance.new("TextBox")
+WalkSpeedBox.Size = UDim2.new(0.33, -2, 1, 0)
+WalkSpeedBox.Text = tostring(walkSpeed)
+WalkSpeedBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+WalkSpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+WalkSpeedBox.Font = Enum.Font.Gotham
+WalkSpeedBox.TextSize = 14
+WalkSpeedBox.Parent = InputRow
+Instance.new("UICorner", WalkSpeedBox).CornerRadius = UDim.new(0, 6)
+
+WalkSpeedBox.FocusLost:Connect(function(enterPressed)
+    if not enterPressed then return end
+    local val = tonumber(WalkSpeedBox.Text)
+    if val and val > 0 then
+        walkSpeed = val
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = walkSpeed end
+    end
+end)
+
+-- Auto-set WalkSpeed on execution
+task.defer(function()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local hum = char:WaitForChild("Humanoid")
+    if hum then hum.WalkSpeed = walkSpeed end
+end)
 
 -- Status Labels
 local StatusLabel = Instance.new("TextLabel")
@@ -127,6 +158,9 @@ SpiderStatusLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
 SpiderStatusLabel.Font = Enum.Font.Gotham
 SpiderStatusLabel.TextSize = 16
 SpiderStatusLabel.Parent = MainFrame
+
+-- (rest of script continues unchanged...)
+
 
 -- Teleport Button
 local TPButton = Instance.new("TextButton")
