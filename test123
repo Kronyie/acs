@@ -1,20 +1,14 @@
 --[[
-  Refactored Multi-Bot (V44 - Scrollable UI & Heal Un-equip)
+  Refactored Multi-Bot (V45 - Fix Appl Heal Item, Scrollable UI, Un-equip Logic)
   
-  *** V44 NEW FEATURES / FIXES ***
-  - FIX: Converted all content pages (General, Combat, Mining) to be **ScrollingFrames**. This ensures all buttons and inputs are accessible even if the UI is too small.
-  - FIX: Implemented logic in 'useEmergencyItem' to **un-equip the currently held tool** before equipping the healing item. This prevents errors if the game restricts equipping multiple tools.
+  *** V45 NEW FEATURES / FIXES ***
+  - FIX: Default EmergencyHealItem is now correctly set to "Appl".
+  - FIX: All content pages (General, Combat, Mining) are now ScrollingFrames to handle button overflow.
+  - FIX: The 'useEmergencyItem' function explicitly un-equips the current tool before equipping the healing item.
   
-  *** V43 NEW FEATURES: Health Monitor & Emergency Retreat (Combat Tab) ***
-  - Added real-time Health Monitor display to the Combat tab.
-  - Added "FORCE RETREAT: ON/OFF" toggle to the Combat tab.
-  - Added 'Emergency Heal Item Name' input for the consumable to use.
-  - When active and health is < 50%, the bot stops all activity, teleports to (0, 50, 0), and attempts to use the heal item until health is 100%.
-
-  *** V42 NEW FEATURE ***
-  - Added "10s Auto-Ignore: ON/OFF" toggle button to the General tab.
-  - This allows you to disable the feature that automatically ignores mobs if they are not killed within 10 seconds.
-  - The feature is ON by default.
+  *** V44 FEATURES (Consolidated) ***
+  - Health Monitor & Emergency Retreat System (Combat Tab).
+  - 10s Auto-Ignore Toggle (General Tab).
 --]]
 
 local Players = game:GetService("Players")
@@ -34,7 +28,7 @@ MultiGrinder.__index = MultiGrinder
 --//========================================================================================
 
 local CONFIG = {
-    ScriptName = "Studlands Multi-Bot (V44 - Scrollable UI)", 
+    ScriptName = "Studlands Multi-Bot (V45 - Appl Fix)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -75,29 +69,24 @@ local CONFIG = {
         TeleportOffset = Vector3.new(0, 5, 2), 
     },
     
-    -- Emergency Combat Configuration
+    -- Emergency Combat Configuration (Heal item name set to "Appl" as requested)
     EmergencyHealthThreshold = 0.5, -- 50%
-    EmergencyHealItem = "Health Potion", -- Default healing item name
+    EmergencyHealItem = "Appl", -- Default healing item name (Fix for user request)
 }
 
 local function getRemotes()
     local remotesContainer = Workspace:FindFirstChild("Remotes") or Workspace
     local remotes = {}
     
+    -- Attempt to find the remotes within the given time
     remotes.EquipItem = remotesContainer:WaitForChild("EquipItem", 5) 
     remotes.UseItem = remotesContainer:WaitForChild("UseItem", 5) 
 
     
-    if remotes.EquipItem then
-        print("[Multi-Bot Debug] Remote EquipItem FOUND.")
+    if remotes.EquipItem and remotes.UseItem then
+        print("[Multi-Bot Debug] Remotes EquipItem and UseItem FOUND.")
     else
-        warn("[Multi-Bot Debug] Remote: WARNING - EquipItem remote not found.")
-    end
-    
-    if remotes.UseItem then
-        print("[Multi-Bot Debug] Remote UseItem FOUND. Using direct fire bypass.")
-    else
-        warn("[Multi-Bot Debug] Remote: CRITICAL - UseItem remote not found. Bot will likely fail.")
+        warn("[Multi-Bot Debug] Remote: WARNING - One or more critical remotes not found.")
     end
 
     return remotes
@@ -128,7 +117,7 @@ function MultiGrinder:new()
         
         -- Health-related State
         EmergencyModeActive = false,
-        EmergencyHealItem = CONFIG.EmergencyHealItem,
+        EmergencyHealItem = CONFIG.EmergencyHealItem, -- Defaults to "Appl"
         EmergencyHealthThreshold = CONFIG.EmergencyHealthThreshold,
         EmergencySystemEnabled = true, 
 
@@ -277,8 +266,9 @@ function MultiGrinder:useEmergencyItem(itemName)
         local currentTool = char:FindFirstChildOfClass("Tool")
         if currentTool then
             print(string.format("[Multi-Bot Debug] Un-equipping current tool: %s", currentTool.Name))
-            remotes.EquipItem:InvokeServer("") -- Standard way to un-equip
-            task.wait(0.05) -- Small wait
+            -- Use EquipItem with "" to un-equip
+            remotes.EquipItem:InvokeServer("") 
+            task.wait(0.05) 
         end
         
         -- 2. Equip the emergency item
@@ -299,7 +289,7 @@ function MultiGrinder:useEmergencyItem(itemName)
             return false
         end
     else
-        warn(string.format("[Multi-Bot Debug] CRITICAL FAILURE: Emergency Item (%s) not found in Backpack or Character.", itemName))
+        warn(string.format("[Multi-Bot Debug] CRITICAL FAILURE: Emergency Item (%s) not found in Backpack or Character. Please check the name ('Appl').", itemName))
         return false
     end
 end
@@ -448,7 +438,6 @@ function MultiGrinder:executeMiningAction(hrp)
     local toolName = self.MiningToolName
     local remotes = self.Remotes
     local resource = self.CurrentTarget
-
  
     local needsNewTarget = not resource or not resource.Parent
 
@@ -556,6 +545,13 @@ function MultiGrinder:updateGUI()
     -- Combat tab specific updates
     local healthBarLabel = self.MainGui.CombatPage.Content.HealthBarLabel
     local emergencyButton = self.MainGui.CombatPage.Content.EmergencyToggleButton
+    
+    -- Mining tab specific updates
+    local MToolNameInput = self.MainGui.MiningPage.Content.MToolNameInput
+    local MTargetNamesInput = self.MainGui.MiningPage.Content.MTargetNamesInput
+
+    MToolNameInput.Text = self.MiningToolName
+    MTargetNamesInput.Text = self.MiningTargetNames
     
     local char = LocalPlayer.Character
     local humanoid = char and char:FindFirstChildOfClass("Humanoid")
@@ -719,7 +715,7 @@ local function createListLayout(parent)
     return ListLayout
 end
 
--- NEW: Function to create a scrollable content area
+-- Function to create a scrollable content area
 local function createScrollableContentPage(contentParent, name)
     local ScrollFrame = Instance.new("ScrollingFrame")
     ScrollFrame.Name = name .. "Page"
@@ -868,7 +864,7 @@ function MultiGrinder:setupGUI()
     TabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
     TabLayout.Parent = TabBar
 
-    local TabNames = {"General", "Combat", "Mining", "Placeholder 2"}
+    local TabNames = {"General", "Combat", "Mining"}
     local Tabs = {}
     
     for _, tabName in ipairs(TabNames) do
@@ -1026,8 +1022,9 @@ function MultiGrinder:setupGUI()
     end)
 
     -- Emergency Heal Item Input
-    createInputLabel(CombatContent, "Emergency Heal Item Name (e.g., Potion):")
-    local CHealItemInput = createTextBox(CombatContent, self.EmergencyHealItem, "E.g., Health Potion")
+    -- NOTE: This correctly displays 'Appl' as the default and allows user editing.
+    createInputLabel(CombatContent, "Emergency Heal Item Name (Default: Appl):")
+    local CHealItemInput = createTextBox(CombatContent, self.EmergencyHealItem, "E.g., Appl")
     CHealItemInput.Name = "CHealItemInput"
     CHealItemInput.FocusLost:Connect(function(enterPressed)
         self.EmergencyHealItem = CHealItemInput.Text
@@ -1075,12 +1072,12 @@ function MultiGrinder:setupGUI()
         self.CurrentTarget = nil 
         self.CurrentTargetIdentifier = nil 
         self.EquippedToolName = nil
-        self:updateGUI()
+        self:updateGUI() 
         print(string.format("[Multi-Bot Debug] Mining Tool updated: %s", self.MiningToolName))
     end)
     
     createInputLabel(MiningContent, "Resource Names (comma-separated):")
-    local MTargetNamesInput = createTextBox(MiningContent, self.MiningTargetNames, "E.g., Iron, Rock, Gold")
+    local MTargetNamesInput = createTextBox(MiningContent, self.MiningTargetNames, "E.g., Rock, Iron, Gold")
     MTargetNamesInput.Name = "MTargetNamesInput"
     MTargetNamesInput.FocusLost:Connect(function(enterPressed)
         self.MiningTargetNames = MTargetNamesInput.Text
@@ -1100,63 +1097,30 @@ function MultiGrinder:setupGUI()
     MRangeLabel.Parent = MiningContent
 
     Pages["Mining"] = MiningScroll
-
-    -- Placeholder Page (Scrollable)
-    local Placeholder2Scroll, Placeholder2Content = createScrollableContentPage(ContentContainer, "Placeholder 2")
-    local LabelP2 = Instance.new("TextLabel")
-    LabelP2.Text = "More settings here."
-    LabelP2.Size = UDim2.new(1, 0, 0, 30)
-    LabelP2.BackgroundTransparency = 1
-    LabelP2.TextColor3 = Color3.fromRGB(150, 150, 150)
-    LabelP2.Parent = Placeholder2Content
-    Pages["Placeholder 2"] = Placeholder2Scroll
-
-
+    
+    -- Final GUI Setup
     self.MainGui = {
         ScreenGui = ScreenGui,
         MainFrame = MainFrame,
+        TitleBar = TitleBar,
         MinimizeButton = MinimizeButton,
+        CloseButton = CloseButton,
         Tabs = Tabs,
         Pages = Pages,
-        GeneralPage = {
-            Scroll = GeneralScroll, -- Store ScrollFrame
-            Content = { -- Store ContentFrame children
-                ToggleButton = ToggleButton,
-                ModeButton = ModeButton,
-                IgnoreButton = IgnoreButton, 
-                ClearIgnoreButton = ClearIgnoreButton, 
-                AutoIgnoreButton = AutoIgnoreButton, 
-            }
-        },
-        CombatPage = {
-            Scroll = CombatScroll,
-            Content = { 
-                ToolNameInput = CToolNameInput,
-                TargetNamesInput = CTargetNamesInput,
-                HealthBarLabel = HealthBarLabel, 
-                HealItemInput = CHealItemInput, 
-                EmergencyToggleButton = EmergencyToggleButton, 
-            }
-        },
-        MiningPage = {
-            Scroll = MiningScroll,
-            Content = {
-                ToolNameInput = MToolNameInput,
-                TargetNamesInput = MTargetNamesInput,
-            }
-        }
+        GeneralPage = GeneralScroll,
+        CombatPage = CombatScroll,
+        MiningPage = MiningScroll,
     }
 
-    MinimizeButton.MouseButton1Click:Connect(function()
-        self:setMinimizedState(not self.IsMinimized)
-    end)
-
     CloseButton.MouseButton1Click:Connect(function()
-  
         if self.LoopThread then task.cancel(self.LoopThread) end
         restoreCamera(self)
         ScreenGui:Destroy()
         print("[Multi-Bot Debug] Bot script shut down.")
+    end)
+    
+    MinimizeButton.MouseButton1Click:Connect(function()
+        self:setMinimizedState(not self.IsMinimized)
     end)
     
     self:setMinimizedState(self.IsMinimized)
@@ -1171,17 +1135,13 @@ function MultiGrinder:start()
     self:setupGUI()
     print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
     
-    -- Separate listener for real-time GUI updates (like health)
-    RunService.Heartbeat:Connect(function()
-        self:updateGUI()
-    end)
-    
     self.LoopThread = task.spawn(function()
         while task.wait(CONFIG.FarmSpeed) do
-            if self.Enabled and not self.EmergencyModeActive then 
+            if self.Enabled then
                 local hrp = self:getHumanoidRootPart()
                 
                 if not hrp then 
+                    -- print("[Multi-Bot Debug] Waiting for character HRP...")
                     continue 
                 end
                 
@@ -1191,24 +1151,15 @@ function MultiGrinder:start()
                     self:executeMiningAction(hrp)
                 end
             end
-            
-            if self.Enabled and self.EmergencyModeActive then
-                -- Re-run the combat action to process healing/retreat logic
-                local hrp = self:getHumanoidRootPart()
-                if hrp then
-                    self:executeCombatAction(hrp) 
-                end
-            end
         end
     end)
 end
 
 --//========================================================================================
 --// SCRIPT EXECUTION
---//================================S========================================
+--//========================================================================================
 
 pcall(function()
     local bot = MultiGrinder:new()
- 
     bot:start()
 end)
