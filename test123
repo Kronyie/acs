@@ -215,8 +215,12 @@ function MultiGrinder:findTarget(hrp, targetsTable, targetNames, searchRadius)
     -- If no specific names are provided, assume any mob in the table is valid (fallback)
     local checkName = #targetNames > 0
 
-    if checkName and self.Config.AreaPriorityEnabled and targetNames == parseNameList(self.Config.PriorityMobNames) then
-        -- This block retains the priority-by-order logic ONLY for Priority Mob Names
+    -- Check if this is the high-priority list (Priority Mob Names)
+    -- We keep the priority-by-order logic ONLY for Priority Mob Names (PriorityMobNames)
+    local isPriorityList = self.Config.AreaPriorityEnabled and targetNames == parseNameList(self.Config.PriorityMobNames)
+    
+    if isPriorityList then
+        -- This block retains the priority-by-order logic for Priority Mob Names
         for _, targetName in ipairs(targetNames) do
             local currentBest = nil
             local currentBestDistance = nearestDistance
@@ -237,7 +241,7 @@ function MultiGrinder:findTarget(hrp, targetsTable, targetNames, searchRadius)
         end
         return nil -- No targets of any priority found
     else
-        -- NEW LOGIC FOR STANDARD TARGET NAMES: Find the nearest mob whose name is ANYWHERE in the list
+        -- NEW LOGIC FOR STANDARD TARGET NAMES: Find the nearest mob whose name is ANYWHERE in the list (No list order priority)
         for _, mob in ipairs(targetsTable) do
             -- Ensure mob is in the allowed set of names AND is not ignored
             if (not checkName or targetNameSet[mob.Name:lower()]) and not mob.IsIgnored then
@@ -272,7 +276,7 @@ function MultiGrinder:getNearestTarget()
             local areaTargets = {}
             for _, mob in ipairs(mobs) do
                 for _, area in ipairs(self.PriorityAreas) do
-                    -- *** NOTE: Radius check uses the modified PriorityAreaRadius (25) ***
+                    -- Check uses the modified PriorityAreaRadius (25)
                     if (area.Center - mob:getPart().Position).Magnitude <= self.Config.PriorityAreaRadius then
                         table.insert(areaTargets, mob)
                         break -- Found in one area, move to next mob
@@ -346,6 +350,7 @@ function MultiGrinder:executeCombatAction(hrp)
             self:updateStatus("Attacking: " .. target.Name)
             
             -- Simulate Combat Loop
+            -- Loop condition now explicitly checks if the target has been ignored by a concurrent call
             while target.IsIgnored == false and (tick() - killAttemptTime) < self.Config.IgnoreTimeout do
                 -- Check if target is still valid/alive (e.g., check parent exists, health, etc.)
                 if not mobPart.Parent or not mobPart.Parent:FindFirstChildOfClass("Humanoid") or mobPart.Parent:FindFirstChildOfClass("Humanoid").Health <= 0 then
