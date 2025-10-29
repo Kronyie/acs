@@ -1,14 +1,14 @@
 --[[
-  Refactored Multi-Bot (V45 - Fix Appl Heal Item, Scrollable UI, Un-equip Logic)
+  Refactored Multi-Bot (V47 - Aggressive Equip/Unequip Stability)
   
-  *** V45 NEW FEATURES / FIXES ***
-  - FIX: Default EmergencyHealItem is now correctly set to "Appl".
-  - FIX: All content pages (General, Combat, Mining) are now ScrollingFrames to handle button overflow.
-  - FIX: The 'useEmergencyItem' function explicitly un-equips the current tool before equipping the healing item.
+  *** V47 NEW FEATURES / FIXES ***
+  - FIX: Implemented an aggressive loop in 'useEmergencyItem' to eliminate the "yellow text" error.
+         - Explicitly UN-EQUIPs current tool using InvokeServer("").
+         - Now WAITs up to 1 second for the previous tool to disappear from the Character model.
+         - Attempts to EQUIP the heal item up to 3 times, checking with WaitForChild before proceeding to use the item.
   
-  *** V44 FEATURES (Consolidated) ***
-  - Health Monitor & Emergency Retreat System (Combat Tab).
-  - 10s Auto-Ignore Toggle (General Tab).
+  *** V46 FEATURES (Consolidated) ***
+  - FIX: Improved the 'useEmergencyItem' function's reliability for equipping the heal item using FireServer.
 --]]
 
 local Players = game:GetService("Players")
@@ -28,7 +28,7 @@ MultiGrinder.__index = MultiGrinder
 --//========================================================================================
 
 local CONFIG = {
-    ScriptName = "Studlands Multi-Bot (V45 - Appl Fix)", 
+    ScriptName = "Studlands Multi-Bot (V47 - Equip Fix)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -251,45 +251,60 @@ function MultiGrinder:simulateAction(toolName)
 end
 -- =========================================================================
 
--- FIX: Added logic to un-equip current tool before equipping heal item.
+-- FIX: Aggressive Equip/Unequip Stability for Emergency Heal
 function MultiGrinder:useEmergencyItem(itemName)
     local char = LocalPlayer.Character
     local remotes = self.Remotes
     
     if not char or not remotes.UseItem or not remotes.EquipItem then return false end
     
-    local toolInstance = LocalPlayer.Backpack:FindFirstChild(itemName) or char:FindFirstChild(itemName)
+    local toolInstanceInBackpack = LocalPlayer.Backpack:FindFirstChild(itemName)
 
-    if toolInstance then
-        
-        -- 1. UN-EQUIP CURRENT TOOL (Fire EquipItem with an empty string)
-        local currentTool = char:FindFirstChildOfClass("Tool")
-        if currentTool then
-            print(string.format("[Multi-Bot Debug] Un-equipping current tool: %s", currentTool.Name))
-            -- Use EquipItem with "" to un-equip
-            remotes.EquipItem:InvokeServer("") 
-            task.wait(0.05) 
-        end
-        
-        -- 2. Equip the emergency item
-        if not char:FindFirstChild(itemName) then
-            print(string.format("[Multi-Bot Debug] Equipping emergency item: %s", itemName))
-            remotes.EquipItem:InvokeServer(itemName)
-            task.wait(0.1) -- Small wait after equip
-        end
-
-        -- 3. Use the item (need to check if it's still in character after equip)
-        local equippedHealItem = char:FindFirstChild(itemName)
-        if equippedHealItem then
-            remotes.UseItem:FireServer(equippedHealItem, false)
-            print(string.format("[Multi-Bot Debug] Remote Action: Used emergency item %s.", itemName))
-            return true
-        else
-            warn(string.format("[Multi-Bot Debug] Emergency Item (%s) failed to equip/locate for use.", itemName))
-            return false
-        end
-    else
+    if not toolInstanceInBackpack and not char:FindFirstChild(itemName) then
         warn(string.format("[Multi-Bot Debug] CRITICAL FAILURE: Emergency Item (%s) not found in Backpack or Character. Please check the name ('Appl').", itemName))
+        return false
+    end
+    
+    -- 1. UN-EQUIP CURRENT TOOL (Essential before equipping a different item)
+    local currentTool = char:FindFirstChildOfClass("Tool")
+    if currentTool then
+        print(string.format("[Multi-Bot Debug] Un-equipping current tool: %s", currentTool.Name))
+        remotes.EquipItem:InvokeServer("") -- Request server un-equip
+
+        -- WAIT up to 1 second for the tool to disappear
+        local unequipWait = 0
+        while char:FindFirstChild(currentTool.Name) and unequipWait < 10 do 
+            task.wait(0.1)
+            unequipWait = unequipWait + 1
+        end
+        if char:FindFirstChild(currentTool.Name) then
+            warn("[Multi-Bot Debug] UN-EQUIP FAILED: Tool still present after 1 second of waiting.")
+        end
+    end
+    
+    -- 2. Equip the emergency item & ensure it's equipped (up to 3 attempts)
+    local equippedHealItem = char:FindFirstChild(itemName)
+    local equipAttempts = 0
+    
+    while not equippedHealItem and equipAttempts < 3 do
+        print(string.format("[Multi-Bot Debug] Equipping emergency item: %s (Attempt %d)", itemName, equipAttempts + 1))
+        
+        -- Use FireServer for the equip request
+        remotes.EquipItem:FireServer(itemName) 
+        
+        -- Wait briefly (0.3s) for it to appear
+        equippedHealItem = char:WaitForChild(itemName, 0.3)
+        
+        equipAttempts = equipAttempts + 1
+    end
+
+    -- 3. Use the item
+    if equippedHealItem then
+        remotes.UseItem:FireServer(equippedHealItem, false)
+        print(string.format("[Multi-Bot Debug] Remote Action: Used emergency item %s.", itemName))
+        return true
+    else
+        warn(string.format("[Multi-Bot Debug] Emergency Item (%s) FAILED TO EQUIP after 3 attempts.", itemName))
         return false
     end
 end
@@ -1108,8 +1123,8 @@ function MultiGrinder:setupGUI()
         Tabs = Tabs,
         Pages = Pages,
         GeneralPage = GeneralScroll,
-        CombatPage = CombatScroll,
-        MiningPage = MiningScroll,
+        CombatPage = CombatContent,
+        MiningPage = MiningContent,
     }
 
     CloseButton.MouseButton1Click:Connect(function()
