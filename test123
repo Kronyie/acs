@@ -865,7 +865,7 @@ function MultiGrinder:setupGUI()
     local ContentContainer = Instance.new("Frame")
     ContentContainer.Name = "ContentContainer"
     ContentContainer.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight + CONFIG.TabBarHeight) 
-    ContentContainer.Size = UDim2.new(1, 0, 1, -(CONFIG.TitleBArHeight + CONFIG.TabBarHeight))
+    ContentContainer.Size = UDim2.new(1, 0, 1, -(CONFIG.TitleBarHeight + CONFIG.TabBarHeight)) -- FIX: Was 'TitleBArHeight' (with a typo)
     ContentContainer.BackgroundColor3 = CONFIG.BackgroundColor
     ContentContainer.Parent = MainFrame
     ContentContainer.BorderSizePixel = 0
@@ -1184,3 +1184,4 @@ pcall(function()
     local bot = MultiGrinder:new()
     bot:start()
 end)
+
