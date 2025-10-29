@@ -1,15 +1,14 @@
 --[[
-  Refactored Multi-Bot1 (V43 - Priority Targeting & Scrollable UI)
+  Refactored Multi-Bot (V43 - Priority Targeting & Scrollable UI)
   
   *** V43 NEW FEATURES ***
   - Feature: Added Prioritization system to the Combat tab.
     - Bot now checks for prioritized mobs within defined geographical zones (MobName:X,Y,Z,Radius) before checking for the closest general target.
     - Added a toggle button in the Combat tab to enable/disable this feature.
     - Added a multi-line input box to define multiple prioritized spawn locations.
-  - Feature: Updated the main content area of the GUI to be a ScrollableFrame, ensuring all options are accessible regardless of screen size.
   
-  *** V43 FIX for UI Not Appearing ***
-  - The script execution now ensures the LocalPlayer and their character are fully loaded before calling the setupGUI function.
+  *** V43 FIX for Mob Name Changing in Priority Zones (Requested Update) ***
+  - Fix: The Priority Target Search now checks for *any* mob listed in the main Combat Target Names (Cavey, Troll, Bonezos, etc.) if it is within the specified geographical priority radius. This ensures the bot keeps farming a priority zone even if the mob type changes upon respawn.
 --]]
 
 local Players = game:GetService("Players")
@@ -63,9 +62,9 @@ local CONFIG = {
         TargetNames = {"Cavey", "Bonezos", "Troll", "Goblin"}, 
         TeleportOffset = Vector3.new(0, 5, 5),
         
-        -- NEW: Prioritized targets (Format: MobName1:X,Y,Z,Radius | MobName2:X2,Y2,Z2,Radius2)
-        -- The bot will prioritize these targets if they are within the specified radius of the coordinates.
-        PrioritizedTargets = "Bonezos:100,5,-50,15 | Troll:200,5,100,20", 
+        -- NEW: Prioritized zones (Format: ZoneName:X,Y,Z,Radius | ZoneName2:X2,Y2,Z2,Radius2)
+        -- The bot will prioritize ANY mob matching TargetNames if it is within the specified radius of the coordinates.
+        PrioritizedTargets = "BonezosZone:100,5,-50,15 | TrollSpawn:200,5,100,20", 
         PriorityEnabled = false,
     },
 
@@ -172,7 +171,7 @@ end
 -- V43: Helper function to parse priority input string
 function MultiGrinder:parsePrioritizedTargets(targetString)
     local locations = {}
-    -- Format: MobName:X,Y,Z,Radius | MobName2:X2,Y2,Z2,Radius2
+    -- Format: ZoneName:X,Y,Z,Radius | ZoneName2:X2,Y2,Z2,Radius2
     for entry in string.gmatch(targetString, "([^|]+)") do
         local parts = {}
         for part in string.gmatch(entry, "[^:]+") do
@@ -190,7 +189,7 @@ function MultiGrinder:parsePrioritizedTargets(targetString)
             -- Ensure we have a Name, 3 coordinates, and 1 radius
             if #coords == 4 and name and name ~= "" and coords[1] and coords[2] and coords[3] and coords[4] then
                 table.insert(locations, {
-                    Name = name,
+                    Name = name, -- This is now the zone name, not the mob name
                     Position = Vector3.new(coords[1], coords[2], coords[3]),
                     Radius = coords[4]
                 })
@@ -214,14 +213,18 @@ function MultiGrinder:getHumanoidRootPart()
     return hrp
 end
 
-function MultiGrinder:getTargetNames(mode)
+-- V43: Refactored target name getter to return a set (for faster lookup)
+function MultiGrinder:getTargetNameSet(mode)
     local targetString = (mode == "Combat") and self.CombatTargetNames or self.MiningTargetNames
     local names = {}
+    local nameSet = {}
     for name in string.gmatch(targetString, "[^,]+") do
         local trimmedName = name:gsub("^%s*(.-)%s*$", "%1")
+        local lowerName = string.lower(trimmedName)
         names[#names + 1] = trimmedName 
+        nameSet[lowerName] = true
     end
-    return names
+    return names, nameSet
 end
 
 -- V43 CHANGE: Now includes a priority check first.
@@ -231,6 +234,10 @@ function MultiGrinder:findClosestTarget(position, names)
     local closestTargetKey = nil -- The Model/Part instance used for persistent ignore
     local minDistance = math.huge
     local searchRadius = math.huge 
+    
+    -- V43: Get the names as a set for quick lookup
+    local _, targetNameSet = self:getTargetNameSet(self.Mode)
+
 
     -- --- 1. PRIORITY TARGET SEARCH (NEW V43) ---
     if self.Mode == "Combat" and self.IsPriorityEnabled and #self.PrioritizedLocations > 0 then
@@ -245,21 +252,25 @@ function MultiGrinder:findClosestTarget(position, names)
             if targetPart and targetPart.Parent ~= LocalPlayer.Character then
                 
                 local targetKey = nil
-                if targetPart.Parent:FindFirstChildOfClass("Humanoid") then
-                    targetKey = targetPart.Parent 
-                else
-                    targetKey = targetPart
-                end
-                
-                -- Check if target is ignored before considering it
-                if targetKey and self.IgnoredTargets[targetKey] then
-                    continue 
-                end
+                local objNameLower = string.lower(obj.Name)
 
-                for _, pLoc in ipairs(self.PrioritizedLocations) do
-                    -- Check Name match (case-insensitive)
-                    if string.lower(obj.Name) == string.lower(pLoc.Name) then
-                        -- Check Radius match (if the mob is inside the priority zone)
+                -- Check if the object is a valid, configured target first
+                if targetNameSet[objNameLower] then
+                    
+                    if targetPart.Parent:FindFirstChildOfClass("Humanoid") then
+                        targetKey = targetPart.Parent 
+                    else
+                        targetKey = targetPart
+                    end
+                    
+                    -- Check if target is ignored before considering it
+                    if targetKey and self.IgnoredTargets[targetKey] then
+                        continue 
+                    end
+                    
+                    -- Now, check if this valid target is within ANY priority zone
+                    for _, pLoc in ipairs(self.PrioritizedLocations) do
+                        
                         local distToLocation = (targetPart.Position - pLoc.Position).Magnitude
                         
                         if distToLocation <= pLoc.Radius then
@@ -286,33 +297,34 @@ function MultiGrinder:findClosestTarget(position, names)
 
     -- --- 2. REGULAR TARGET SEARCH (EXISTING LOGIC) ---
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        for _, name in ipairs(names) do
-            if string.lower(obj.Name) == string.lower(name) then 
-                local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
+        local objNameLower = string.lower(obj.Name)
+
+        -- Use the target name set for faster lookup
+        if targetNameSet[objNameLower] then 
+            local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
+            
+            local targetKey = nil
+            if targetPart and targetPart.Parent:FindFirstChildOfClass("Humanoid") then
+                -- If it has a Humanoid, the unique identifier is the Model (the parent)
+                targetKey = targetPart.Parent 
+            elseif targetPart and targetPart:IsA("BasePart") then
+                -- Otherwise, it is the Part itself (for resources or non-humanoid parts)
+                targetKey = targetPart
+            end
+
+            if targetPart and targetPart.Position and targetPart.Parent ~= LocalPlayer.Character then
                 
-                local targetKey = nil
-                if targetPart and targetPart.Parent:FindFirstChildOfClass("Humanoid") then
-                    -- If it has a Humanoid, the unique identifier is the Model (the parent)
-                    targetKey = targetPart.Parent 
-                elseif targetPart and targetPart:IsA("BasePart") then
-                    -- Otherwise, it is the Part itself (for resources or non-humanoid parts)
-                    targetKey = targetPart
+                -- Check if this specific target identifier is in the ignored list
+                if targetKey and self.IgnoredTargets[targetKey] then
+                    continue -- Skip this ignored target
                 end
 
-                if targetPart and targetPart.Position and targetPart.Parent ~= LocalPlayer.Character then
-                    
-                    -- Check if this specific target identifier is in the ignored list
-                    if targetKey and self.IgnoredTargets[targetKey] then
-                        continue -- Skip this ignored target
-                    end
-
-                    local dist = (targetPart.Position - position).Magnitude
-                    
-                    if dist < searchRadius and dist < minDistance then
-                        minDistance = dist
-                        closestTargetPart = targetPart -- Store the HRP/Part for teleporting
-                        closestTargetKey = targetKey -- Store the identifier key separately
-                    end
+                local dist = (targetPart.Position - position).Magnitude
+                
+                if dist < searchRadius and dist < minDistance then
+                    minDistance = dist
+                    closestTargetPart = targetPart -- Store the HRP/Part for teleporting
+                    closestTargetKey = targetKey -- Store the identifier key separately
                 end
             end
         end
@@ -983,8 +995,9 @@ function MultiGrinder:setupGUI()
     end)
 
     -- V43: Priority Input
-    createInputLabel(CombatPage, "Priority Mobs (MobName:X,Y,Z,Radius | MobName2:...)")
-    local CPriorityInput = createTextBox(CombatPage, self.CombatPriorityTargetsString, "E.g., Troll:100,5,50,20", true) -- Multiline input
+    -- NOTE: Label updated to reflect that the zone will target *any* configured mob.
+    createInputLabel(CombatPage, "Priority Zones (ZoneName:X,Y,Z,Radius | Zone2:...)") 
+    local CPriorityInput = createTextBox(CombatPage, self.CombatPriorityTargetsString, "E.g., MainCave:100,5,50,20", true) -- Multiline input
     CPriorityInput.Name = "CPriorityInput"
     CPriorityInput.FocusLost:Connect(function(enterPressed)
         self.CombatPriorityTargetsString = CPriorityInput.Text
