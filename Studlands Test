@@ -37,7 +37,7 @@ MultiGrinder.__index = MultiGrinder
 --//========================================================================================
 
 local CONFIG = {
-    ScriptName = "Studlands Multi-Bot (V42 - Ignore Toggle)", 
+    ScriptName = "Studlands (V42)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -67,8 +67,8 @@ local CONFIG = {
 
     -- Teleport configuration (Defaults)
     Combat = {
-        ToolName = "Prism Gauntlet", -- Set to your suspected tool name
-        TargetNames = {"Cavey", "Bonezos", "Troll", "Goblin"}, 
+        ToolName = "Unstable Cylindery Hammer", -- Set to your suspected tool name
+        TargetNames = {"Musheynator", "Mushmasher", "Big Mushman", "Mystic Mimic", "Bluecapey", "Cylindery"}, 
         TeleportOffset = Vector3.new(0, 5, 5), 
     },
 
