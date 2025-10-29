@@ -7,18 +7,9 @@
     - Added a toggle button in the Combat tab to enable/disable this feature.
     - Added a multi-line input box to define multiple prioritized spawn locations.
   - Feature: Updated the main content area of the GUI to be a ScrollableFrame, ensuring all options are accessible regardless of screen size.
-
-  *** V42 NEW FEATURE ***
-  - Added "10s Auto-Ignore: ON/OFF" toggle button to the General tab.
-  - This allows you to disable the feature that automatically ignores mobs if they are not killed within 10 seconds.
-  - The feature is ON by default.
-
-  *** V41 FIX: TargetKey Not a Member Error ***
-  - Fix: findClosestTarget now returns two values: the closestTarget (HRP/Part) AND the targetKey (Model/Part) directly.
-  - Fix: executeCombatAction and executeMiningAction were updated to correctly receive and use these two separate return values for better stability.
-
-  *** V40 FIX: Target Re-Acquisition (The core issue reported) ***
-  - Fix: Modified findClosestTarget and the ignore logic to use a persistent identifier (the top-level Model for Mobs, or the Part itself for Resources) as the key in the IgnoredTargets table.
+  
+  *** V43 FIX for UI Not Appearing ***
+  - The script execution now ensures the LocalPlayer and their character are fully loaded before calling the setupGUI function.
 --]]
 
 local Players = game:GetService("Players")
@@ -83,12 +74,15 @@ local CONFIG = {
         TargetNames = {"Iron", "Rock", "Blood Stone", "Gold", "Salt Rock"},
         TeleportOffset = Vector3.new(0, 5, 2), 
     },
+    
+    AutoIgnoreEnabled = true,
 }
 
 local function getRemotes()
     local remotesContainer = Workspace:FindFirstChild("Remotes") or Workspace
     local remotes = {}
     
+    -- Wait for the remotes to ensure the bot can actually attack/mine
     remotes.EquipItem = remotesContainer:WaitForChild("EquipItem", 5) 
     remotes.UseItem = remotesContainer:WaitForChild("UseItem", 5) 
 
@@ -132,7 +126,8 @@ function MultiGrinder:new()
         -- NEW PRIORITY VARIABLES (V43)
         CombatPriorityTargetsString = CONFIG.Combat.PrioritizedTargets,
         IsPriorityEnabled = CONFIG.Combat.PriorityEnabled,
-        PrioritizedLocations = self:parsePrioritizedTargets(CONFIG.Combat.PrioritizedTargets), -- Parsed table
+        -- Need to call the parser AFTER 'self' is fully constructed
+        PrioritizedLocations = {},
         
         OriginalCameraCFrame = nil, 
 
@@ -146,7 +141,9 @@ function MultiGrinder:new()
         IsMinimized = false,
         
     }, MultiGrinder)
-
+    
+    -- Now safe to parse using the created instance
+    self.PrioritizedLocations = self:parsePrioritizedTargets(CONFIG.Combat.PrioritizedTargets)
     self.InitialFrameHeight = CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight
     
     -- CharacterAdded Listener to handle respawn AND GUI persistence
@@ -1110,6 +1107,13 @@ end
 --//========================================================================================
 
 function MultiGrinder:start()
+    -- CRITICAL FIX: Ensure character is loaded before setting up GUI, 
+    -- as some GUI components rely on initial HRP position or properties.
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        print("[Multi-Bot Debug] Waiting for Character to load...")
+        LocalPlayer.CharacterAdded:Wait()
+    end
+    
     self:setupGUI()
     print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
     
@@ -1137,6 +1141,7 @@ end
 --// SCRIPT EXECUTION
 --//========================================================================================
 
+-- The pcall handles the execution and will now call start() only once LocalPlayer is available.
 pcall(function()
     local bot = MultiGrinder:new()
     bot:start()
