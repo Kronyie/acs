@@ -1,14 +1,14 @@
 --[[
-  Refactored Multi-Bot (V43 - Priority Targeting & Scrollable UI)
+  Refactored Multi-Bot (V44 - UI Robustness & Error Logging)
+  
+  *** V44 FIX for GUI Not Appearing ***
+  - Fix: Implemented a robust pcall (Protected Call) around the entire setupGUI function.
+  - Fix: Added detailed error logging to the 'start' function. If the GUI fails to initialize, it will now print the exact Lua error to the console, allowing for immediate diagnosis.
+  - Fix: Added a final print statement in setupGUI to confirm successful completion.
   
   *** V43 NEW FEATURES ***
   - Feature: Added Prioritization system to the Combat tab.
-    - Bot now checks for prioritized mobs within defined geographical zones (MobName:X,Y,Z,Radius) before checking for the closest general target.
-    - Added a toggle button in the Combat tab to enable/disable this feature.
-    - Added a multi-line input box to define multiple prioritized spawn locations.
-  
-  *** V43 FIX for Mob Name Changing in Priority Zones (Requested Update) ***
-  - Fix: The Priority Target Search now checks for *any* mob listed in the main Combat Target Names (Cavey, Troll, Bonezos, etc.) if it is within the specified geographical priority radius. This ensures the bot keeps farming a priority zone even if the mob type changes upon respawn.
+  - Fix: The Priority Target Search now checks for *any* mob listed in the main Combat Target Names (Cavey, Troll, Bonezos, etc.) if it is within the specified geographical priority radius, resolving the issue with changing mob names in priority zones.
 --]]
 
 local Players = game:GetService("Players")
@@ -28,7 +28,7 @@ MultiGrinder.__index = MultiGrinder
 --//========================================================================================
 
 local CONFIG = {
-    ScriptName = "Studlands Multi-Bot (V43 - Priority)", 
+    ScriptName = "Studlands Multi-Bot (V44 - Robust UI)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -63,7 +63,6 @@ local CONFIG = {
         TeleportOffset = Vector3.new(0, 5, 5),
         
         -- NEW: Prioritized zones (Format: ZoneName:X,Y,Z,Radius | ZoneName2:X2,Y2,Z2,Radius2)
-        -- The bot will prioritize ANY mob matching TargetNames if it is within the specified radius of the coordinates.
         PrioritizedTargets = "BonezosZone:100,5,-50,15 | TrollSpawn:200,5,100,20", 
         PriorityEnabled = false,
     },
@@ -160,7 +159,8 @@ function MultiGrinder:new()
         local playerGui = LocalPlayer:WaitForChild("PlayerGui")
         if not playerGui:FindFirstChild("MultiBotGui") then
             print("[Multi-Bot Debug] GUI missing after respawn, re-initializing GUI and restoring state.")
-            self:setupGUI()
+            -- NOTE: We don't need pcall here as setupGUI is also called in start()
+            self:setupGUI() 
             self:updateGUI() 
         end
     end)
@@ -1113,6 +1113,7 @@ function MultiGrinder:setupGUI()
     
     self:setMinimizedState(self.IsMinimized)
     self:showTab(self.CurrentTab)
+    print("[Multi-Bot Debug] setupGUI function completed successfully.") -- Confirmation
 end
 
 --//========================================================================================
@@ -1120,15 +1121,20 @@ end
 --//========================================================================================
 
 function MultiGrinder:start()
-    -- CRITICAL FIX: Ensure character is loaded before setting up GUI, 
-    -- as some GUI components rely on initial HRP position or properties.
+    -- CRITICAL FIX: Ensure character is loaded before setting up GUI.
     if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
         print("[Multi-Bot Debug] Waiting for Character to load...")
         LocalPlayer.CharacterAdded:Wait()
     end
     
-    self:setupGUI()
-    print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
+    local success, err = pcall(self.setupGUI, self)
+    if success then
+        print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
+    else
+        warn("[Multi-Bot Debug] CRITICAL ERROR: Failed to set up GUI. The script stopped.")
+        warn("Error Details:", err)
+        return -- Stop if GUI fails
+    end
     
     self.LoopThread = task.spawn(function()
         while task.wait(CONFIG.FarmSpeed) do
