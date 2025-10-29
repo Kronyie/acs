@@ -1008,7 +1008,7 @@ function MultiGrinder:setupGUI()
     ButtonHolderLayout.VerticalAlignment = Enum.VerticalAlignment.Center
     ButtonHolderLayout.SortOrder = Enum.SortOrder.LayoutOrder
     ButtonHolderLayout.Padding = UDim.new(0.02, 0) -- 2% padding between buttons
-    ButtonHolder.Parent = CombatPage
+    ButtonHolderLayout.Parent = ButtonHolder -- FIX: This was incorrectly set to ButtonHolder.Parent = CombatPage
     
     local SetPriorityAreaButton = createSmallButton(ButtonHolder, "Set Priority Area (Radius 50)", CONFIG.AccentColor)
     SetPriorityAreaButton.Name = "SetPriorityAreaButton"
@@ -1184,4 +1184,5 @@ pcall(function()
     local bot = MultiGrinder:new()
     bot:start()
 end)
+
 
