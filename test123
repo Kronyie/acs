@@ -1,14 +1,17 @@
 --[[
-  Refactored Multi-Bot (V44 - UI Robustness & Error Logging)
+  Refactored Multi-Bot (V45 - Debugging Start Flow)
   
+  *** V45 DEBUG FIX ***
+  - Fix: Added a critical print statement in the main execution block (after the constructor) to confirm the script reaches the 'start' function call.
+  - Fix: Simplified the character check at the beginning of 'start()' to avoid potential yields that could be stopping execution before the GUI is created.
+  - The script now reports the exact point of failure more clearly if it stops between the constructor and the start of the main loop.
+
   *** V44 FIX for GUI Not Appearing ***
-  - Fix: Implemented a robust pcall (Protected Call) around the entire setupGUI function.
-  - Fix: Added detailed error logging to the 'start' function. If the GUI fails to initialize, it will now print the exact Lua error to the console, allowing for immediate diagnosis.
-  - Fix: Added a final print statement in setupGUI to confirm successful completion.
+  - Fix: Implemented a robust pcall (Protected Call) around the entire setupGUI function to report the exact error.
   
   *** V43 NEW FEATURES ***
   - Feature: Added Prioritization system to the Combat tab.
-  - Fix: The Priority Target Search now checks for *any* mob listed in the main Combat Target Names (Cavey, Troll, Bonezos, etc.) if it is within the specified geographical priority radius, resolving the issue with changing mob names in priority zones.
+  - Fix: The Priority Target Search now checks for *any* mob listed in the main Combat Target Names.
 --]]
 
 local Players = game:GetService("Players")
@@ -28,7 +31,7 @@ MultiGrinder.__index = MultiGrinder
 --//========================================================================================
 
 local CONFIG = {
-    ScriptName = "Studlands Multi-Bot (V44 - Robust UI)", 
+    ScriptName = "Studlands Multi-Bot (V45 - Debugging Start Flow)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -124,7 +127,6 @@ function MultiGrinder:new()
         -- NEW PRIORITY VARIABLES (V43)
         CombatPriorityTargetsString = CONFIG.Combat.PrioritizedTargets,
         IsPriorityEnabled = CONFIG.Combat.PriorityEnabled,
-        -- Need to call the parser AFTER 'self' is fully constructed
         PrioritizedLocations = {},
         
         OriginalCameraCFrame = nil, 
@@ -159,7 +161,6 @@ function MultiGrinder:new()
         local playerGui = LocalPlayer:WaitForChild("PlayerGui")
         if not playerGui:FindFirstChild("MultiBotGui") then
             print("[Multi-Bot Debug] GUI missing after respawn, re-initializing GUI and restoring state.")
-            -- NOTE: We don't need pcall here as setupGUI is also called in start()
             self:setupGUI() 
             self:updateGUI() 
         end
@@ -330,7 +331,6 @@ function MultiGrinder:findClosestTarget(position, names)
         end
     end
     
-    -- V4S1 Change: Return both values
     return closestTargetPart, closestTargetKey
 end
 
@@ -1121,10 +1121,11 @@ end
 --//========================================================================================
 
 function MultiGrinder:start()
-    -- CRITICAL FIX: Ensure character is loaded before setting up GUI.
+    print("[Multi-Bot Debug] --> Start Function Executing.") -- V45: New line
+    
+    -- V45: Simplified check to avoid unnecessary yields here
     if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        print("[Multi-Bot Debug] Waiting for Character to load...")
-        LocalPlayer.CharacterAdded:Wait()
+        warn("[Multi-Bot Debug] Character not fully loaded at start. Waiting for CharacterAdded to re-run setup.")
     end
     
     local success, err = pcall(self.setupGUI, self)
@@ -1154,14 +1155,17 @@ function MultiGrinder:start()
             end
         end
     end)
+    
+    print("[Multi-Bot Debug] Start function finished executing.") -- V45: New line
 end
 
 --//========================================================================================
 --// SCRIPT EXECUTION
 --//========================================================================================
 
--- The pcall handles the execution and will now call start() only once LocalPlayer is available.
 pcall(function()
     local bot = MultiGrinder:new()
+    print("[Multi-Bot Debug] Constructor completed. Starting bot.") -- V45: New line
     bot:start()
+    print("[Multi-Bot Debug] Main thread completed.") -- V45: New line
 end)
