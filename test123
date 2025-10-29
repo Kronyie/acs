@@ -1,5 +1,5 @@
 --[[
-  Refactored Multi-Bot123 (V43 - Priority Targeting)
+  Refactored Multi-Bot (V43 - Priority Targeting - Multi-Area)
   
   *** V43 NEW FEATURES ***
   - Feature: Text Box Priority Targeting.
@@ -7,13 +7,13 @@
     - It will attempt to kill all mobs matching the first name before moving to the second, and so on.
     - This applies to Combat, Mining, AND the new Priority Area mobs.
   
-  - Feature: Priority Area Targeting (Combat Tab).
+  - Feature: Priority Area Targeting (Combat Tab) - NOW SUPPORTS MULTIPLE AREAS!
     - Added "Area Priority: ON/OFF" toggle to the Combat tab.
     - Added "Priority Mob Names (First > Last)" text box.
-    - Added "Set Priority Area (Radius 50)" button: Sets a 50-stud radius priority zone at your character's current position.
-    - Added "Clear Priority Area" button: Clears the priority zone.
+    - Added "Set Priority Area (Radius 50)" button: Sets a 50-stud radius priority zone at your character's current position. You can set up to 5 areas.
+    - Added "Clear Priority Areas" button: Clears ALL priority zones.
   - Logic:
-    - When "Area Priority" is ON and an Area is set, the bot will *constantly* scan that area for mobs from your "Priority Mob Names" list.
+    - When "Area Priority" is ON and Areas are set, the bot will *constantly* scan ALL defined areas for mobs from your "Priority Mob Names" list.
     - If it finds a priority mob, it will *immediately stop its current action* (even mid-fight) to kill the priority mob.
     - It respects the "first-to-last" order for the priority mob names.
 
@@ -77,8 +77,8 @@ local CONFIG = {
 
     -- Teleport configuration (Defaults)
     Combat = {
-        ToolName = "Prism Gauntlet", -- Set to your suspected tool name
-        TargetNames = {"Cavey", "Bonezos", "Troll", "Goblin"}, 
+        ToolName = "Unstable Cylindery Hammer", -- Set to your suspected tool name
+        TargetNames = {"Cylindery", "Musheynator", "Mushmasher", "Big Mushman", "Mystic Mimic", "Bluecapey"}, 
         TeleportOffset = Vector3.new(0, 5, 5), 
     },
 
@@ -140,11 +140,12 @@ function MultiGrinder:new()
         TargetAcquiredTime = nil, -- For auto-ignore timer
         AutoIgnoreEnabled = true, -- V42: Toggle for 10s auto-ignore
         
-        -- NEW (V43): Priority Area Targeting State
+        -- NEW (V43 - Multi-Area): Priority Area Targeting State
         PriorityTargetingEnabled = false,
-        PriorityMobNames = "GoblinKing, TrollShaman", -- Default example
-        PriorityAreaCenter = nil,
-        PriorityAreaRadius = 50, -- Fixed radius
+        PriorityMobNames = "Musheynator, Cylindery", -- Default example
+        -- Store areas as a table of {Center: Vector3, Radius: number}
+        PriorityAreas = {}, -- CHANGED: From single Vector3 to table of areas
+        MaxPriorityAreas = 5, -- New limit for areas
         
         -- Persistent GUI State
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
@@ -267,10 +268,10 @@ function MultiGrinder:findClosestTarget(position, names)
     return nil, nil
 end
 
--- NEW (V43): Function to find priority targets within a specific area
--- Also uses "first-to-last" priority from the priority names list.
+-- NEW (V43 - Multi-Area): Function to find priority targets within a specific area
+-- Now iterates through ALL PriorityAreas.
 function MultiGrinder:findPriorityTarget(position)
-    if not self.PriorityTargetingEnabled or not self.PriorityAreaCenter then
+    if not self.PriorityTargetingEnabled or #self.PriorityAreas == 0 then -- CHECK #PriorityAreas
         return nil, nil
     end
 
@@ -303,10 +304,18 @@ function MultiGrinder:findPriorityTarget(position)
                         continue -- Skip ignored target
                     end
                     
-                    -- V43: Check if target is INSIDE the priority area
-                    local distFromCenter = (targetPart.Position - self.PriorityAreaCenter).Magnitude
-                    if distFromCenter > self.PriorityAreaRadius then
-                        continue -- Skip, target is outside priority area
+                    local isInAnyPriorityArea = false
+                    -- V43 Multi-Area: Check if target is INSIDE ANY of the priority areas
+                    for _, area in ipairs(self.PriorityAreas) do
+                        local distFromCenter = (targetPart.Position - area.Center).Magnitude
+                        if distFromCenter <= area.Radius then -- Check against the stored Radius
+                            isInAnyPriorityArea = true
+                            break
+                        end
+                    end
+                    
+                    if not isInAnyPriorityArea then
+                        continue -- Skip, target is outside all priority areas
                     end
 
                     local distFromPlayer = (targetPart.Position - position).Magnitude
@@ -617,11 +626,18 @@ function MultiGrinder:updateGUI()
     end
     
     local setAreaButton = self.MainGui.CombatPage.SetPriorityAreaButton
-    if self.PriorityAreaCenter then
-        setAreaButton.Text = string.format("Area Set (%.0f, %.0f, %.0f)", self.PriorityAreaCenter.X, self.PriorityAreaCenter.Y, self.PriorityAreaCenter.Z)
+    local areaCount = #self.PriorityAreas -- CHANGED: Check the count of the table
+    if areaCount > 0 then
+        setAreaButton.Text = string.format("Set Priority Area (Areas: %d/%d)", areaCount, self.MaxPriorityAreas)
+        setAreaButton.BackgroundColor3 = Color3.fromRGB(0, 150, 250) -- Blue when areas are set
     else
         setAreaButton.Text = "Set Priority Area (Radius 50)"
+        setAreaButton.BackgroundColor3 = CONFIG.AccentColor
     end
+    
+    local clearAreaButton = self.MainGui.CombatPage.ClearPriorityAreaButton
+    clearAreaButton.Text = string.format("Clear Priority Areas (%d)", areaCount)
+    clearAreaButton.Visible = areaCount > 0 -- Only show clear button if areas exist
 
     -- Tabs
     for tabName, tabButton in pairs(self.MainGui.Tabs) do
@@ -865,7 +881,7 @@ function MultiGrinder:setupGUI()
     local ContentContainer = Instance.new("Frame")
     ContentContainer.Name = "ContentContainer"
     ContentContainer.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight + CONFIG.TabBarHeight) 
-    ContentContainer.Size = UDim2.new(1, 0, 1, -(CONFIG.TitleBarHeight + CONFIG.TabBarHeight)) -- FIX: Was 'TitleBArHeight' (with a typo)
+    ContentContainer.Size = UDim2.new(1, 0, 1, -(CONFIG.TitleBarHeight + CONFIG.TabBarHeight)) 
     ContentContainer.BackgroundColor3 = CONFIG.BackgroundColor
     ContentContainer.Parent = MainFrame
     ContentContainer.BorderSizePixel = 0
@@ -1007,27 +1023,32 @@ function MultiGrinder:setupGUI()
     ButtonHolderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
     ButtonHolderLayout.VerticalAlignment = Enum.VerticalAlignment.Center
     ButtonHolderLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    ButtonHolderLayout.Padding = UDim.new(0.02, 0) -- 2% padding between buttons
-    ButtonHolderLayout.Parent = ButtonHolder -- FIX: This was incorrectly set to ButtonHolder.Parent = CombatPage
+    ButtonHolderLayout.Padding = UDim.new(0.02, 0) 
+    ButtonHolderLayout.Parent = ButtonHolder
     
     local SetPriorityAreaButton = createSmallButton(ButtonHolder, "Set Priority Area (Radius 50)", CONFIG.AccentColor)
     SetPriorityAreaButton.Name = "SetPriorityAreaButton"
     SetPriorityAreaButton.MouseButton1Click:Connect(function()
         local hrp = self:getHumanoidRootPart()
         if hrp then
-            self.PriorityAreaCenter = hrp.Position
-            print(string.format("[Multi-Bot Debug] Priority Area Set at: %.0f, %.0f, %.0f (Radius %d)", hrp.Position.X, hrp.Position.Y, hrp.Position.Z, self.PriorityAreaRadius))
+            if #self.PriorityAreas < self.MaxPriorityAreas then
+                local newArea = {Center = hrp.Position, Radius = self.PriorityAreaRadius}
+                table.insert(self.PriorityAreas, newArea) -- CHANGED: Insert into the table
+                print(string.format("[Multi-Bot Debug] Priority Area #%d Set at: %.0f, %.0f, %.0f", #self.PriorityAreas, hrp.Position.X, hrp.Position.Y, hrp.Position.Z))
+            else
+                print(string.format("[Multi-Bot Debug] WARNING: Maximum of %d areas reached. Clear some before adding more.", self.MaxPriorityAreas))
+            end
             self:updateGUI()
         else
             print("[Multi-Bot Debug] Cannot set priority area: Character HRP not found.")
         end
     end)
     
-    local ClearPriorityAreaButton = createSmallButton(ButtonHolder, "Clear Priority Area", Color3.fromRGB(220, 120, 0)) -- Orange
+    local ClearPriorityAreaButton = createSmallButton(ButtonHolder, "Clear Priority Areas", Color3.fromRGB(220, 120, 0)) -- Orange
     ClearPriorityAreaButton.Name = "ClearPriorityAreaButton"
     ClearPriorityAreaButton.MouseButton1Click:Connect(function()
-        self.PriorityAreaCenter = nil
-        print("[Multi-Bot Debug] Priority Area Cleared.")
+        self.PriorityAreas = {} -- CHANGED: Reset the whole table
+        print("[Multi-Bot Debug] ALL Priority Areas Cleared.")
         self:updateGUI()
     end)
 
@@ -1084,10 +1105,11 @@ function MultiGrinder:setupGUI()
     
     local InfoLabel = Instance.new("TextLabel")
     InfoLabel.Text = [[
-V43 - Priority Targeting:
-- Target lists are now "First-to-Last" priority.
-- "Area Priority" (Combat Tab) lets you set a zone.
-- If a mob from the "Priority Mob Names" list spawns in that zone, the bot will stop its current target to kill it.
+V43 - Priority Targeting (Multi-Area):
+- Supports setting up to 5 Priority Areas.
+- Target lists are "First-to-Last" priority.
+- "Area Priority" (Combat Tab) scans ALL set zones.
+- If a mob from the "Priority Mob Names" list spawns in ANY of those zones, the bot will stop its current target to kill it.
 - Use "Set Priority Area" to drop a 50-stud radius zone at your feet.
 
 V42 - Auto-Ignore Toggle:
@@ -1184,5 +1206,4 @@ pcall(function()
     local bot = MultiGrinder:new()
     bot:start()
 end)
-
 
