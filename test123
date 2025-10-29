@@ -1,5 +1,9 @@
 --[[
-  Refactored Multi-Bot123 (V43 - Health & Retreatss)
+  Refactored Multi-Bot (V44 - Scrollable UI & Heal Un-equip)
+  
+  *** V44 NEW FEATURES / FIXES ***
+  - FIX: Converted all content pages (General, Combat, Mining) to be **ScrollingFrames**. This ensures all buttons and inputs are accessible even if the UI is too small.
+  - FIX: Implemented logic in 'useEmergencyItem' to **un-equip the currently held tool** before equipping the healing item. This prevents errors if the game restricts equipping multiple tools.
   
   *** V43 NEW FEATURES: Health Monitor & Emergency Retreat (Combat Tab) ***
   - Added real-time Health Monitor display to the Combat tab.
@@ -30,21 +34,21 @@ MultiGrinder.__index = MultiGrinder
 --//========================================================================================
 
 local CONFIG = {
-    ScriptName = "Studlands Multi-Bot (V43 - Health & Retreat)", 
+    ScriptName = "Studlands Multi-Bot (V44 - Scrollable UI)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
-    -- UI Dimensions (Unchanged)
+    -- UI Dimensions
     FrameWidth = 260, 
     TitleBarHeight = 35, 
     TabBarHeight = 30,
-    ContentAreaHeight = 220, 
+    ContentAreaHeight = 220, -- This is the visible area for content
     MainFrameCornerRadius = 10,
     ButtonHeight = 30, 
     ButtonCornerRadius = 8,
     InputHeight = 30,
-
-    -- Colors (Unchanged)
+    
+    -- Colors
     BackgroundColor = Color3.fromRGB(35, 35, 45), 
     TitleBarColor = Color3.fromRGB(30, 30, 40), 
     TabBarColor = Color3.fromRGB(40, 40, 50), 
@@ -71,7 +75,7 @@ local CONFIG = {
         TeleportOffset = Vector3.new(0, 5, 2), 
     },
     
-    -- NEW: Emergency Combat Configuration
+    -- Emergency Combat Configuration
     EmergencyHealthThreshold = 0.5, -- 50%
     EmergencyHealItem = "Health Potion", -- Default healing item name
 }
@@ -112,8 +116,8 @@ function MultiGrinder:new()
         CurrentTab = "General", 
  
         
-        CurrentTarget = nil, -- The Part we teleport to (HRP or Resource Part)
-        CurrentTargetIdentifier = nil, -- V40: The instance we use as the persistent ignore key (Model for mob, Part for resource)
+        CurrentTarget = nil, 
+        CurrentTargetIdentifier = nil, 
         EquippedToolName = nil, 
         
         -- Live Config Variables
@@ -122,18 +126,18 @@ function MultiGrinder:new()
         MiningToolName = CONFIG.Mining.ToolName,
         MiningTargetNames = table.concat(CONFIG.Mining.TargetNames, ", "),
         
-        -- NEW: Health-related State
+        -- Health-related State
         EmergencyModeActive = false,
         EmergencyHealItem = CONFIG.EmergencyHealItem,
         EmergencyHealthThreshold = CONFIG.EmergencyHealthThreshold,
-        EmergencySystemEnabled = true, -- NEW (V43): Toggle for the entire system
+        EmergencySystemEnabled = true, 
 
         OriginalCameraCFrame = nil, 
 
         -- Ignored targets are stored in a weak key table for automatic cleanup.
         IgnoredTargets = setmetatable({}, {__mode = "k"}),
-        TargetAcquiredTime = nil, -- For auto-ignore timer
-        AutoIgnoreEnabled = true, -- NEW (V42): Toggle for 10s auto-ignore
+        TargetAcquiredTime = nil, 
+        AutoIgnoreEnabled = true, 
         
         -- Persistent GUI State
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
@@ -151,7 +155,7 @@ function MultiGrinder:new()
         -- State Fixes (re-equip)
         self.EquippedToolName = nil 
         self.CurrentTarget = nil
-        self.CurrentTargetIdentifier = nil -- V40 NEW: Reset identifier
+        self.CurrentTargetIdentifier = nil 
         self.TargetAcquiredTime = nil 
         print("[Multi-Bot Debug] Character respawned. EquippedToolName reset to force re-equip.")
         
@@ -193,10 +197,9 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
--- V41 CHANGE: Now returns two values: targetPart (HRP/Resource) and targetKey (Model/Resource)
 function MultiGrinder:findClosestTarget(position, names)
-    local closestTargetPart = nil -- The Part we teleport to (HRP or Resource Part)
-    local closestTargetKey = nil -- The Model/Part instance used for persistent ignore
+    local closestTargetPart = nil 
+    local closestTargetKey = nil 
     local minDistance = math.huge
     local searchRadius = math.huge 
 
@@ -218,10 +221,8 @@ function MultiGrinder:findClosestTarget(position, names)
 
                 if targetPart and targetPart.Position and targetPart.Parent ~= LocalPlayer.Character then
                     
-   
-                    -- Check if this specific target identifier is in the ignored list
                     if targetKey and self.IgnoredTargets[targetKey] then
-                        continue -- Skip this ignored target
+                        continue 
                    
                     end
 
@@ -229,8 +230,8 @@ function MultiGrinder:findClosestTarget(position, names)
                     
                     if dist < searchRadius and dist < minDistance then
                         minDistance = dist
-                        closestTargetPart = targetPart -- Store the HRP/Part for teleporting
-                        closestTargetKey = targetKey -- Store the identifier key separately
+                        closestTargetPart = targetPart 
+                        closestTargetKey = targetKey 
                     end
                 
                 end
@@ -238,7 +239,6 @@ function MultiGrinder:findClosestTarget(position, names)
         end
     end
     
-    -- V4S1 Change: Return both values
     return closestTargetPart, closestTargetKey
 end
 
@@ -251,43 +251,55 @@ function MultiGrinder:simulateAction(toolName)
     
     if not char or not remotes.UseItem then return end
 
-    -- Check if the tool is in the Character (equipped) or the Backpack (available)
     local toolInstance = char:FindFirstChild(toolName) or LocalPlayer.Backpack:FindFirstChild(toolName)
 
     if toolInstance then
         remotes.UseItem:FireServer(toolInstance, false)
         -- print(string.format("[Multi-Bot Debug] Remote Action: UseItem Fired with %s.", toolName)) -- Comment out for speed
     else
-        -- Only warn if the tool is truly missing from both places
         warn(string.format("[Multi-Bot Debug] CRITICAL FAILURE: Tool Instance (%s) not found in Character OR Backpack. Check tool name configuration.", toolName))
     end
 end
 -- =========================================================================
 
--- NEW: Function to equip and use an item (for healing/retreat)
+-- FIX: Added logic to un-equip current tool before equipping heal item.
 function MultiGrinder:useEmergencyItem(itemName)
     local char = LocalPlayer.Character
     local remotes = self.Remotes
     
     if not char or not remotes.UseItem or not remotes.EquipItem then return false end
     
-    local toolInstance = char:FindFirstChild(itemName) or LocalPlayer.Backpack:FindFirstChild(itemName)
+    local toolInstance = LocalPlayer.Backpack:FindFirstChild(itemName) or char:FindFirstChild(itemName)
 
     if toolInstance then
-        -- 1. Equip the item first (uses InvokeServer which waits for the tool to appear)
+        
+        -- 1. UN-EQUIP CURRENT TOOL (Fire EquipItem with an empty string)
+        local currentTool = char:FindFirstChildOfClass("Tool")
+        if currentTool then
+            print(string.format("[Multi-Bot Debug] Un-equipping current tool: %s", currentTool.Name))
+            remotes.EquipItem:InvokeServer("") -- Standard way to un-equip
+            task.wait(0.05) -- Small wait
+        end
+        
+        -- 2. Equip the emergency item
         if not char:FindFirstChild(itemName) then
-            -- Note: Using InvokeServer here ensures the tool is equipped before use, which is safer for consumables.
             print(string.format("[Multi-Bot Debug] Equipping emergency item: %s", itemName))
             remotes.EquipItem:InvokeServer(itemName)
             task.wait(0.1) -- Small wait after equip
         end
 
-        -- 2. Use the item
-        remotes.UseItem:FireServer(toolInstance, false)
-        print(string.format("[Multi-Bot Debug] Remote Action: Used emergency item %s.", itemName))
-        return true
+        -- 3. Use the item (need to check if it's still in character after equip)
+        local equippedHealItem = char:FindFirstChild(itemName)
+        if equippedHealItem then
+            remotes.UseItem:FireServer(equippedHealItem, false)
+            print(string.format("[Multi-Bot Debug] Remote Action: Used emergency item %s.", itemName))
+            return true
+        else
+            warn(string.format("[Multi-Bot Debug] Emergency Item (%s) failed to equip/locate for use.", itemName))
+            return false
+        end
     else
-        warn(string.format("[Multi-Bot Debug] CRITICAL FAILURE: Emergency Item (%s) not found in Character OR Backpack.", itemName))
+        warn(string.format("[Multi-Bot Debug] CRITICAL FAILURE: Emergency Item (%s) not found in Backpack or Character.", itemName))
         return false
     end
 end
@@ -296,7 +308,7 @@ end
 local function restoreCamera(self)
     if self.OriginalCameraCFrame then 
         Camera.CFrame = self.OriginalCameraCFrame 
-        self.OriginalCameraCFrame = nil -- FIX: Was OriginalCFrame
+        self.OriginalCameraCFrame = nil 
     end
 end
 
@@ -308,7 +320,8 @@ function MultiGrinder:executeCombatAction(hrp)
 
     -- NEW: Health Check & Emergency Logic
     if self.EmergencySystemEnabled then
-        if humanoid.Health / humanoid.MaxHealth < self.EmergencyHealthThreshold and not self.EmergencyModeActive then
+        local healthRatio = humanoid.Health / humanoid.MaxHealth
+        if healthRatio < self.EmergencyHealthThreshold and not self.EmergencyModeActive then
             -- ENTER EMERGENCY MODE
             self.EmergencyModeActive = true
             self.CurrentTarget = nil 
@@ -326,14 +339,14 @@ function MultiGrinder:executeCombatAction(hrp)
     end
 
     if self.EmergencyModeActive then
-        -- 1. Use the healing item
+        -- 1. Use the healing item (handles equip/unequip)
         self:useEmergencyItem(self.EmergencyHealItem)
         
         -- 2. Teleport to a safe, static location (0, 50, 0)
         hrp.CFrame = CFrame.new(Vector3.new(0, 50, 0)) 
         
-        task.wait(1.0) -- Wait a moment before next attempt
-        return false -- Do not continue combat logic
+        task.wait(1.0) 
+        return false 
     end
     
     -- *** Normal Combat Logic resumes here ***
@@ -342,18 +355,16 @@ function MultiGrinder:executeCombatAction(hrp)
     local remotes = self.Remotes
     local target = self.CurrentTarget
     
-    -- V40: Check if the mob model is gone or dead.
     local needsNewTarget = not target or not target.Parent or not target.Parent:FindFirstChildOfClass("Humanoid") or target.Parent:FindFirstChildOfClass("Humanoid").Health <= 0
     
     if needsNewTarget then
         local targetNames = self:getTargetNames("Combat")
         
-        -- V41 CHANGE: Receive both values
         local newTarget, newTargetKey = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newTarget then 
             self.CurrentTarget = nil 
-            self.CurrentTargetIdentifier = nil -- V40
+            self.CurrentTargetIdentifier = nil 
             self.TargetAcquiredTime = nil 
             restoreCamera(self) 
             self:updateGUI() 
@@ -361,29 +372,25 @@ function MultiGrinder:executeCombatAction(hrp)
         end
         
         self.CurrentTarget = newTarget
-        self.CurrentTargetIdentifier = newTargetKey -- V41: Store the Model/Key
+        self.CurrentTargetIdentifier = newTargetKey 
         target = self.CurrentTarget
         self.TargetAcquiredTime = os.clock() 
         self:updateGUI() 
-        
-        -- print(string.format("[Multi-Bot Debug] Found new combat target: %s", target.Parent.Name))
     end
     
-    -- V38: Auto-ignore target if alive for too long
-    -- V42: Added self.AutoIgnoreEnabled check
+    -- Auto-ignore target if alive for too long
     if self.AutoIgnoreEnabled and target and self.TargetAcquiredTime and (os.clock() - self.TargetAcquiredTime > 10) then
         local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")
         if humanoid and humanoid.Health > 0 then
             local targetName = target.Parent and target.Parent.Name or target.Name
             print(string.format("[Multi-Bot Debug] Target %s alive for > 10s. Auto-ignoring.", targetName))
             
-            -- V40 FIX: Use the CurrentTargetIdentifier for ignoring
             if self.CurrentTargetIdentifier then
                 self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
             end
             
             self.CurrentTarget = nil
-            self.CurrentTargetIdentifier = nil -- V40
+            self.CurrentTargetIdentifier = nil 
             self.TargetAcquiredTime = nil
             restoreCamera(self)
             self:updateGUI()
@@ -409,7 +416,7 @@ function MultiGrinder:executeCombatAction(hrp)
             print(string.format("[Multi-Bot Debug] Equip SUCCESS: %s located in character.", toolName))
             self.EquippedToolName = toolName 
         else
-            warn(string.format("[Multi-Bot Debug] Equip FAILED: %s did not appear in character after 1s.", toolName))
+            warn(string.format("[Multi-Bot Debug] Equip FAILED: %s did not appear in character after 1s. Check tool name.", toolName))
             self.EquippedToolName = nil 
             return false
         end
@@ -443,30 +450,27 @@ function MultiGrinder:executeMiningAction(hrp)
     local resource = self.CurrentTarget
 
  
-    -- V40: Check if the resource part is gone.
     local needsNewTarget = not resource or not resource.Parent
 
     if needsNewTarget then
         local targetNames = self:getTargetNames("Mining")
         
-        -- V41 CHANGE: Receive both values
         local newResource, newResourceKey = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newResource then 
             self.CurrentTarget = nil
-            self.CurrentTargetIdentifier = nil -- V40
+            self.CurrentTargetIdentifier = nil 
             restoreCamera(self) 
             self:updateGUI() 
             return false 
         end
         
         self.CurrentTarget = newResource
-        self.CurrentTargetIdentifier = newResourceKey -- V41: Store the Part/Key
+        self.CurrentTargetIdentifier = newResourceKey 
         resource = self.CurrentTarget
  
         self:updateGUI()
         
-        -- print(string.format("[Multi-Bot Debug] Found new resource: %s", resource.Name))
     end
     
     local char = LocalPlayer.Character
@@ -485,7 +489,7 @@ function MultiGrinder:executeMiningAction(hrp)
             print(string.format("[Multi-Bot Debug] Equip SUCCESS: %s located in character.", toolName))
             self.EquippedToolName = toolName 
         else
-            warn(string.format("[Multi-Bot Debug] Equip FAILED: %s did not appear in character after 1s.", toolName))
+            warn(string.format("[Multi-Bot Debug] Equip FAILED: %s did not appear in character after 1s. Check tool name.", toolName))
             self.EquippedToolName = nil 
             return false 
         end
@@ -543,15 +547,15 @@ end
 
 function MultiGrinder:updateGUI()
     if not self.MainGui then return end
-    local toggleButton = self.MainGui.GeneralPage.ToggleButton
-    local modeButton = self.MainGui.GeneralPage.ModeButton
-    local ignoreButton = self.MainGui.GeneralPage.IgnoreButton 
+    local toggleButton = self.MainGui.GeneralPage.Content.ToggleButton
+    local modeButton = self.MainGui.GeneralPage.Content.ModeButton
+    local ignoreButton = self.MainGui.GeneralPage.Content.IgnoreButton 
    
-    local autoIgnoreButton = self.MainGui.GeneralPage.AutoIgnoreButton -- NEW (V42)
+    local autoIgnoreButton = self.MainGui.GeneralPage.Content.AutoIgnoreButton 
     
-    -- NEW (V43): Combat tab specific updates
-    local healthBarLabel = self.MainGui.CombatPage.HealthBarLabel
-    local emergencyButton = self.MainGui.CombatPage.EmergencyToggleButton
+    -- Combat tab specific updates
+    local healthBarLabel = self.MainGui.CombatPage.Content.HealthBarLabel
+    local emergencyButton = self.MainGui.CombatPage.Content.EmergencyToggleButton
     
     local char = LocalPlayer.Character
     local humanoid = char and char:FindFirstChildOfClass("Humanoid")
@@ -577,7 +581,7 @@ function MultiGrinder:updateGUI()
         end
     end
     
-    -- NEW (V43): Update Emergency Toggle Button
+    -- Update Emergency Toggle Button
     if emergencyButton then
         if self.EmergencySystemEnabled then
             emergencyButton.Text = "FORCE RETREAT: ON"
@@ -602,7 +606,6 @@ function MultiGrinder:updateGUI()
         ignoreButton.Visible = true
      
         
-        -- V40: Use CurrentTargetIdentifier to get the name if available
         local identifier = self.CurrentTargetIdentifier
         if identifier then
             local targetName = identifier.Name
@@ -617,7 +620,7 @@ function MultiGrinder:updateGUI()
         ignoreButton.Visible = false
     end
 
-    -- NEW (V42): Update Auto-Ignore Button text and color
+    -- Update Auto-Ignore Button text and color
     if self.AutoIgnoreEnabled then
         autoIgnoreButton.Text = "10s Auto-Ignore: ON"
         autoIgnoreButton.BackgroundColor3 = CONFIG.ToggleOnColor
@@ -650,7 +653,7 @@ function MultiGrinder:showTab(tabName)
     if not contentContainer then return end
 
     for _, page in pairs(contentContainer:GetChildren()) do
-        if page:IsA("Frame") and page.Name:match("Page$") then
+        if page:IsA("ScrollingFrame") and page.Name:match("Page$") then
             page.Visible = false
         end
     end
@@ -675,8 +678,9 @@ local function createInputLabel(parent, text)
 end
 
 local function createTextBox(parent, initialText, placeholder)
+    -- Increased width to 0.95 to account for scrollbar margin
     local textBox = Instance.new("TextBox")
-    textBox.Size = UDim2.new(0.9, 0, 0, CONFIG.InputHeight)
+    textBox.Size = UDim2.new(0.95, 0, 0, CONFIG.InputHeight)
     textBox.Text = initialText
     textBox.PlaceholderText = placeholder or ""
     textBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 120)
@@ -692,8 +696,9 @@ local function createTextBox(parent, initialText, placeholder)
 end
 
 local function createButton(parent, text, color)
+    -- Increased width to 0.95 to account for scrollbar margin
     local button = Instance.new("TextButton")
-    button.Size = UDim2.new(0.9, 0, 0, CONFIG.ButtonHeight) 
+    button.Size = UDim2.new(0.95, 0, 0, CONFIG.ButtonHeight) 
     button.Text = text
     button.BackgroundColor3 = color or CONFIG.ToggleOffColor
     button.Font = Enum.Font.GothamBold
@@ -714,15 +719,34 @@ local function createListLayout(parent)
     return ListLayout
 end
 
-local function createContentPage(parent, name)
-    local page = Instance.new("Frame")
-    page.Name = name .. "Page"
-    page.Size = UDim2.new(1, 0, 1, 0)
-    page.BackgroundTransparency = 1 
-    page.Visible = false
-    page.Parent = parent
-    
-    return page
+-- NEW: Function to create a scrollable content area
+local function createScrollableContentPage(contentParent, name)
+    local ScrollFrame = Instance.new("ScrollingFrame")
+    ScrollFrame.Name = name .. "Page"
+    ScrollFrame.Size = UDim2.new(1, 0, 1, 0)
+    ScrollFrame.BackgroundTransparency = 1 
+    ScrollFrame.Visible = false
+    ScrollFrame.Parent = contentParent
+    ScrollFrame.BorderSizePixel = 0
+    ScrollFrame.ScrollBarThickness = 6
+    ScrollFrame.VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar
+    ScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y -- Auto-adjust canvas height to content
+
+    local ContentFrame = Instance.new("Frame")
+    ContentFrame.Name = "Content"
+    ContentFrame.Size = UDim2.new(1, 0, 0, 0) -- Width full, height auto-sized by layout
+    ContentFrame.BackgroundTransparency = 1
+    ContentFrame.Parent = ScrollFrame
+
+    -- Add a padding object to ensure content doesn't stick to the edges
+    local Padding = Instance.new("UIPadding", ContentFrame)
+    Padding.PaddingTop = UDim.new(0, 10)
+    Padding.PaddingBottom = UDim.new(0, 10)
+
+    -- List layout handles the stacking and size of items
+    local Layout = createListLayout(ContentFrame)
+
+    return ScrollFrame, ContentFrame
 end
 
 function MultiGrinder:setupGUI()
@@ -876,16 +900,15 @@ function MultiGrinder:setupGUI()
     
     local Pages = {}
 
-    local GeneralPage = createContentPage(ContentContainer, "General")
-    local GeneralLayout = createListLayout(GeneralPage)
-    GeneralLayout.Padding = UDim.new(0, 8) -- Adjusted padding
+    -- General Page (Scrollable)
+    local GeneralScroll, GeneralContent = createScrollableContentPage(ContentContainer, "General")
     
-    local ToggleButton = createButton(GeneralPage, "OFF", CONFIG.ToggleOffColor) 
+    local ToggleButton = createButton(GeneralContent, "OFF", CONFIG.ToggleOffColor) 
     ToggleButton.Name = "ToggleButton"
     ToggleButton.MouseButton1Click:Connect(function()
         self.Enabled = not self.Enabled
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentTargetIdentifier = nil 
         self.EquippedToolName = nil
         self.TargetAcquiredTime = nil 
         if not self.Enabled then
@@ -900,12 +923,12 @@ function MultiGrinder:setupGUI()
     local modeDisplayName = (self.Mode == "Combat") and "Attacking" or "Mining"
     initialModeText = modeDisplayName .. " ("..currentToolName..")"
     
-    local ModeButton = createButton(GeneralPage, initialModeText, CONFIG.AccentColor)
+    local ModeButton = createButton(GeneralContent, initialModeText, CONFIG.AccentColor)
     ModeButton.Name = "ModeButton"
     ModeButton.MouseButton1Click:Connect(function()
         self.Mode = (self.Mode == "Combat" and "Mining" or "Combat")
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentTargetIdentifier = nil 
         self.EquippedToolName = nil
       
         self.TargetAcquiredTime = nil 
@@ -915,21 +938,21 @@ function MultiGrinder:setupGUI()
     end)
 
     -- Ignore Button implementation
-    local IgnoreButton = createButton(GeneralPage, "No Target to Ignore", Color3.fromRGB(80, 80, 80))
+    local IgnoreButton = createButton(GeneralContent, "No Target to Ignore", Color3.fromRGB(80, 80, 80))
     IgnoreButton.Name = "IgnoreButton"
     IgnoreButton.Visible = false 
     IgnoreButton.MouseButton1Click:Connect(function()
-        -- V40: Now checks for the Identifier
+        
         if self.Enabled and self.CurrentTargetIdentifier then
             local targetIdentifier = self.CurrentTargetIdentifier
             local targetName = targetIdentifier.Name
             
-            self.IgnoredTargets[targetIdentifier] = true -- Add the specific identifier instance
+            self.IgnoredTargets[targetIdentifier] = true 
             print(string.format("[Multi-Bot Debug] IGNORED TARGET: %s (Instance added to set)", targetName))
             
  
-            self.CurrentTarget = nil -- Force a new target search immediately
-            self.CurrentTargetIdentifier = nil -- V40
+            self.CurrentTarget = nil 
+            self.CurrentTargetIdentifier = nil 
             self.TargetAcquiredTime = nil 
             restoreCamera(self)
             self:updateGUI()
@@ -938,14 +961,13 @@ function MultiGrinder:setupGUI()
         end
     end)
 
-    -- V39: Clear Ignore List
-    local ClearIgnoreButton = createButton(GeneralPage, "Clear Ignore List", Color3.fromRGB(220, 120, 0)) -- Orange
+    -- Clear Ignore List
+    local ClearIgnoreButton = createButton(GeneralContent, "Clear Ignore List", Color3.fromRGB(220, 120, 0)) -- Orange
     ClearIgnoreButton.Name = "ClearIgnoreButton"
     ClearIgnoreButton.MouseButton1Click:Connect(function()
         self.IgnoredTargets = setmetatable({}, {__mode = "k"})
         print("[Multi-Bot Debug] Manually cleared ignore list.")
         
-        -- If we were targeting an ignored mob, this will force a new search
         if self.CurrentTargetIdentifier and self.IgnoredTargets[self.CurrentTargetIdentifier] then
             self.CurrentTarget = nil
             self.CurrentTargetIdentifier = nil
@@ -954,8 +976,8 @@ function MultiGrinder:setupGUI()
         self:updateGUI()
     end)
     
-    -- NEW (V42): Auto-Ignore Button
-    local AutoIgnoreButton = createButton(GeneralPage, "10s Auto-Ignore: ON", CONFIG.ToggleOnColor)
+    -- Auto-Ignore Button
+    local AutoIgnoreButton = createButton(GeneralContent, "10s Auto-Ignore: ON", CONFIG.ToggleOnColor)
     AutoIgnoreButton.Name = "AutoIgnoreButton"
     AutoIgnoreButton.MouseButton1Click:Connect(function()
         self.AutoIgnoreEnabled = not self.AutoIgnoreEnabled
@@ -963,58 +985,57 @@ function MultiGrinder:setupGUI()
         print(string.format("[Multi-Bot Debug] Auto-Ignore Toggled: %s", self.AutoIgnoreEnabled and "ON" or "OFF"))
     end)
 
-    Pages["General"] = GeneralPage
+    Pages["General"] = GeneralScroll
     
-    local CombatPage = createContentPage(ContentContainer, "Combat")
-    local CombatLayout = createListLayout(CombatPage)
-    CombatLayout.Padding = UDim.new(0, 5) 
-
-    -- NEW (V43): Health Bar Label
+    -- Combat Page (Scrollable)
+    local CombatScroll, CombatContent = createScrollableContentPage(ContentContainer, "Combat")
+    
+    -- Health Bar Label (Stays centered)
     local HealthBarLabel = Instance.new("TextLabel")
     HealthBarLabel.Text = "Health: 100/100 (100%)"
     HealthBarLabel.Name = "HealthBarLabel"
     HealthBarLabel.Size = UDim2.new(1, 0, 0, 20)
     HealthBarLabel.BackgroundTransparency = 1
-    HealthBarLabel.TextColor3 = Color3.fromRGB(0, 180, 0) -- Green
+    HealthBarLabel.TextColor3 = Color3.fromRGB(0, 180, 0) 
     HealthBarLabel.Font = Enum.Font.GothamBold
     HealthBarLabel.TextSize = 14
     HealthBarLabel.TextXAlignment = Enum.TextXAlignment.Center
-    HealthBarLabel.Parent = CombatPage
+    HealthBarLabel.Parent = CombatContent
     
-    createInputLabel(CombatPage, "Attack Weapon/Tool Name:")
-    local CToolNameInput = createTextBox(CombatPage, self.CombatToolName, "E.g., Clockwork Hammer")
+    createInputLabel(CombatContent, "Attack Weapon/Tool Name:")
+    local CToolNameInput = createTextBox(CombatContent, self.CombatToolName, "E.g., Clockwork Hammer")
     CToolNameInput.Name = "CToolNameInput"
     CToolNameInput.FocusLost:Connect(function(enterPressed)
         self.CombatToolName = CToolNameInput.Text
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentTargetIdentifier = nil 
         self.EquippedToolName = nil
         self:updateGUI() 
         print(string.format("[Multi-Bot Debug] Combat Tool updated: %s", self.CombatToolName))
     end)
     
-    createInputLabel(CombatPage, "Target Names (comma-separated):")
+    createInputLabel(CombatContent, "Target Names (comma-separated):")
    
-    local CTargetNamesInput = createTextBox(CombatPage, self.CombatTargetNames, "E.g., Cavey, Bonezos")
+    local CTargetNamesInput = createTextBox(CombatContent, self.CombatTargetNames, "E.g., Cavey, Bonezos")
     CTargetNamesInput.Name = "CTargetNamesInput"
     CTargetNamesInput.FocusLost:Connect(function(enterPressed)
         self.CombatTargetNames = CTargetNamesInput.Text
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentTargetIdentifier = nil 
         print(string.format("[Multi-Bot Debug] Combat Targets updated: %s", self.CombatTargetNames))
     end)
 
-    -- NEW (V43): Emergency Heal Item Input
-    createInputLabel(CombatPage, "Emergency Heal Item Name (e.g., Potion):")
-    local CHealItemInput = createTextBox(CombatPage, self.EmergencyHealItem, "E.g., Health Potion")
+    -- Emergency Heal Item Input
+    createInputLabel(CombatContent, "Emergency Heal Item Name (e.g., Potion):")
+    local CHealItemInput = createTextBox(CombatContent, self.EmergencyHealItem, "E.g., Health Potion")
     CHealItemInput.Name = "CHealItemInput"
     CHealItemInput.FocusLost:Connect(function(enterPressed)
         self.EmergencyHealItem = CHealItemInput.Text
         print(string.format("[Multi-Bot Debug] Emergency Heal Item updated: %s", self.EmergencyHealItem))
     end)
     
-    -- NEW (V43): Emergency System Toggle
-    local EmergencyToggleButton = createButton(CombatPage, 
+    -- Emergency System Toggle
+    local EmergencyToggleButton = createButton(CombatContent, 
         self.EmergencySystemEnabled and "FORCE RETREAT: ON" or "FORCE RETREAT: OFF", 
         self.EmergencySystemEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
     )
@@ -1022,7 +1043,7 @@ function MultiGrinder:setupGUI()
     EmergencyToggleButton.MouseButton1Click:Connect(function()
         self.EmergencySystemEnabled = not self.EmergencySystemEnabled
         if not self.EmergencySystemEnabled then
-            self.EmergencyModeActive = false -- Force exit emergency mode when disabled
+            self.EmergencyModeActive = false 
             restoreCamera(self)
         end
         self:updateGUI() 
@@ -1038,34 +1059,33 @@ function MultiGrinder:setupGUI()
     CRangeLabel.Font = Enum.Font.Gotham
     CRangeLabel.TextSize = 12
     CRangeLabel.TextXAlignment = Enum.TextXAlignment.Center
-    CRangeLabel.Parent = CombatPage
+    CRangeLabel.Parent = CombatContent
 
-    Pages["Combat"] = CombatPage
+    Pages["Combat"] = CombatScroll
     
-    local MiningPage = createContentPage(ContentContainer, "Mining")
-    local MiningLayout = createListLayout(MiningPage)
-    MiningLayout.Padding = UDim.new(0, 5) 
+    -- Mining Page (Scrollable)
+    local MiningScroll, MiningContent = createScrollableContentPage(ContentContainer, "Mining")
     
-    createInputLabel(MiningPage, "Mining Tool Name:")
-    local MToolNameInput = createTextBox(MiningPage, self.MiningToolName, "E.g., Eternium Pickaxe")
+    createInputLabel(MiningContent, "Mining Tool Name:")
+    local MToolNameInput = createTextBox(MiningContent, self.MiningToolName, "E.g., Eternium Pickaxe")
     MToolNameInput.Name = "MToolNameInput"
  
     MToolNameInput.FocusLost:Connect(function(enterPressed)
         self.MiningToolName = MToolNameInput.Text
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentTargetIdentifier = nil 
         self.EquippedToolName = nil
         self:updateGUI()
         print(string.format("[Multi-Bot Debug] Mining Tool updated: %s", self.MiningToolName))
     end)
     
-    createInputLabel(MiningPage, "Resource Names (comma-separated):")
-    local MTargetNamesInput = createTextBox(MiningPage, self.MiningTargetNames, "E.g., Iron, Rock, Gold")
+    createInputLabel(MiningContent, "Resource Names (comma-separated):")
+    local MTargetNamesInput = createTextBox(MiningContent, self.MiningTargetNames, "E.g., Iron, Rock, Gold")
     MTargetNamesInput.Name = "MTargetNamesInput"
     MTargetNamesInput.FocusLost:Connect(function(enterPressed)
         self.MiningTargetNames = MTargetNamesInput.Text
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentTargetIdentifier = nil 
         print(string.format("[Multi-Bot Debug] Mining Targets updated: %s", self.MiningTargetNames))
     end)
     
@@ -1077,19 +1097,19 @@ function MultiGrinder:setupGUI()
     MRangeLabel.Font = Enum.Font.Gotham
     MRangeLabel.TextSize = 12
     MRangeLabel.TextXAlignment = Enum.TextXAlignment.Center
-    MRangeLabel.Parent = MiningPage
+    MRangeLabel.Parent = MiningContent
 
-    Pages["Mining"] = MiningPage
+    Pages["Mining"] = MiningScroll
 
-    local Placeholder2Page = createContentPage(ContentContainer, "Placeholder 2")
-    local Placeholder2Layout = createListLayout(Placeholder2Page)
+    -- Placeholder Page (Scrollable)
+    local Placeholder2Scroll, Placeholder2Content = createScrollableContentPage(ContentContainer, "Placeholder 2")
     local LabelP2 = Instance.new("TextLabel")
     LabelP2.Text = "More settings here."
     LabelP2.Size = UDim2.new(1, 0, 0, 30)
     LabelP2.BackgroundTransparency = 1
     LabelP2.TextColor3 = Color3.fromRGB(150, 150, 150)
-    LabelP2.Parent = Placeholder2Page
-    Pages["Placeholder 2"] = Placeholder2Page
+    LabelP2.Parent = Placeholder2Content
+    Pages["Placeholder 2"] = Placeholder2Scroll
 
 
     self.MainGui = {
@@ -1099,24 +1119,31 @@ function MultiGrinder:setupGUI()
         Tabs = Tabs,
         Pages = Pages,
         GeneralPage = {
-  
-            ToggleButton = ToggleButton,
-            ModeButton = ModeButton,
-            IgnoreButton = IgnoreButton, 
-            ClearIgnoreButton = ClearIgnoreButton, 
-            AutoIgnoreButton = AutoIgnoreButton, -- NEW (V42)
+            Scroll = GeneralScroll, -- Store ScrollFrame
+            Content = { -- Store ContentFrame children
+                ToggleButton = ToggleButton,
+                ModeButton = ModeButton,
+                IgnoreButton = IgnoreButton, 
+                ClearIgnoreButton = ClearIgnoreButton, 
+                AutoIgnoreButton = AutoIgnoreButton, 
+            }
         },
         CombatPage = {
-         
-            ToolNameInput = CToolNameInput,
-            TargetNamesInput = CTargetNamesInput,
-            HealthBarLabel = HealthBarLabel, -- NEW (V43)
-            HealItemInput = CHealItemInput, -- NEW (V43)
-            EmergencyToggleButton = EmergencyToggleButton, -- NEW (V43)
+            Scroll = CombatScroll,
+            Content = { 
+                ToolNameInput = CToolNameInput,
+                TargetNamesInput = CTargetNamesInput,
+                HealthBarLabel = HealthBarLabel, 
+                HealItemInput = CHealItemInput, 
+                EmergencyToggleButton = EmergencyToggleButton, 
+            }
         },
         MiningPage = {
-            ToolNameInput = MToolNameInput,
-            TargetNamesInput = MTargetNamesInput,
+            Scroll = MiningScroll,
+            Content = {
+                ToolNameInput = MToolNameInput,
+                TargetNamesInput = MTargetNamesInput,
+            }
         }
     }
 
@@ -1144,15 +1171,14 @@ function MultiGrinder:start()
     self:setupGUI()
     print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
     
-    -- *** FIX: Separate listener for real-time GUI updates (like health) ***
-    -- This runs constantly to update the health bar and button colors.
+    -- Separate listener for real-time GUI updates (like health)
     RunService.Heartbeat:Connect(function()
         self:updateGUI()
     end)
     
     self.LoopThread = task.spawn(function()
         while task.wait(CONFIG.FarmSpeed) do
-            if self.Enabled and not self.EmergencyModeActive then -- Check EmergencyModeActive
+            if self.Enabled and not self.EmergencyModeActive then 
                 local hrp = self:getHumanoidRootPart()
                 
                 if not hrp then 
@@ -1167,10 +1193,10 @@ function MultiGrinder:start()
             end
             
             if self.Enabled and self.EmergencyModeActive then
-                -- Still need to process the healing logic even if not actively 'farming'
+                -- Re-run the combat action to process healing/retreat logic
                 local hrp = self:getHumanoidRootPart()
                 if hrp then
-                    self:executeCombatAction(hrp) -- This re-runs the health check and healing logic
+                    self:executeCombatAction(hrp) 
                 end
             end
         end
