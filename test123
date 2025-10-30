@@ -1,13 +1,13 @@
 --[[
-  Refactored Multi-Bot (V52 - Immediate Parenting Fix)
+  Refactored Multi-Bot (V53 - Crash Fix & UI Visibility)
   
-  *** V52 CRITICAL FIX ***
-  - RESTRUCTURING: The ScreenGui is now parented to PlayerGui *immediately* after its creation in the 'start' function.
-    - This bypasses potential exploit-client security features that might block UIs if they are fully built before being parented.
-    - All other core logic remains the same (V51 Fixes included).
-
-  - If this still does not work, the issue is environmental (exploit client or game security) and cannot be fixed through script code alone.
-
+  *** V53 CRITICAL FIX (Attempt to index nil with 'Parent') ***
+  - Defensive Check: Added safety checks to ensure `target.Parent` exists before attempting to find the Humanoid, preventing the crash reported on your console when a mob is destroyed by the game.
+  - The line: `local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")`
+  - Is now: `local humanoid = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")`
+  
+  *** V52 UI VISIBILITY FIX (If UI still doesn't show) ***
+  - RESTRUCTURING: The ScreenGui is parented to PlayerGui *immediately* after its creation in the 'start' function. This is the most reliable method for exploit clients.
 --]]
 
 --//========================================================================================
@@ -26,7 +26,7 @@ local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
 
 local CONFIG = {
-    ScriptName = "Studlands (V52)", 
+    ScriptName = "Studlands (V53)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -346,8 +346,9 @@ function MultiGrinder:executeCombatAction(hrp)
             return false 
         end
         
-        -- Check for auto-ignore
-        local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")
+        -- Check for auto-ignore (V53 FIX: Check target.Parent before accessing Humanoid)
+        local humanoid = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
+        
         if self.AutoIgnoreEnabled and humanoid and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
             
             if not self.CurrentPriorityLocation or humanoid.Health <= 0 then
@@ -855,7 +856,7 @@ function MultiGrinder:start()
     ScreenGui.Name = "MultiBotGUI"
     ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
-    -- V52 CRITICAL FIX: Parent the ScreenGui IMMEDIATELY
+    -- V52/V53 CRITICAL UI FIX: Parent the ScreenGui IMMEDIATELY
     if self.PlayerGui then
         ScreenGui.Parent = self.PlayerGui
         print("[Multi-Bot Debug] ScreenGui parented to PlayerGui. Building components now.")
