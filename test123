@@ -1,14 +1,12 @@
 --[[
-  Refactored Multi-Bot (V51 - Final UI Initialization Fix)
+  Refactored Multi-Bot (V52 - Immediate Parenting Fix)
   
-  *** V51 CRITICAL FIX ***
-  - INTEGRATION: Incorporated the robust LocalPlayer and PlayerGui lookup directly into the MultiGrinder:new() constructor.
-    - This ensures 'self.PlayerGui' is correctly defined before 'setupGUI' attempts to parent the ScreenGui, resolving the issue where the UI fails to appear without errors.
-    
-  *** V50 FIXES (Included from previous attempts) ***
-  - CRITICAL FIX: Added the missing 'setMinimizedState' function definition, which was causing the script to crash before the UI could finalize and appear.
-  - GUI GUARANTEE: The ScreenGui is now explicitly parented using the guaranteed 'self.PlayerGui' reference.
-  - CRITICAL LOGGING: Added debug prints to diagnose target searching failures and HRP status.
+  *** V52 CRITICAL FIX ***
+  - RESTRUCTURING: The ScreenGui is now parented to PlayerGui *immediately* after its creation in the 'start' function.
+    - This bypasses potential exploit-client security features that might block UIs if they are fully built before being parented.
+    - All other core logic remains the same (V51 Fixes included).
+
+  - If this still does not work, the issue is environmental (exploit client or game security) and cannot be fixed through script code alone.
 
 --]]
 
@@ -28,7 +26,7 @@ local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
 
 local CONFIG = {
-    ScriptName = "Studlands (V51)", 
+    ScriptName = "Studlands (V52)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -437,7 +435,6 @@ end
 --// GUI
 --//========================================================================================
 
--- V50 FIX: This function was missing and caused a crash on GUI setup.
 function MultiGrinder:setMinimizedState(isMinimized)
     self.IsMinimized = isMinimized
     if self.MainGui and self.MainGui.MainFrame then
@@ -457,13 +454,27 @@ function MultiGrinder:setMinimizedState(isMinimized)
     end
 end
 
-function MultiGrinder:setupGUI()
-    if self.MainGui and self.MainGui.ScreenGui then self.MainGui.ScreenGui:Destroy() end
-    
-    local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "MultiBotGUI"
-    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+function MultiGrinder:updateGUI()
+    if self.MainGui and self.MainGui.GeneralPage then
+        local ToggleButton = self.MainGui.GeneralPage.ToggleButton
+        local ModeButton = self.MainGui.GeneralPage.ModeButton
+        local AutoIgnoreButton = self.MainGui.GeneralPage.AutoIgnoreButton 
+        local PriorityCountLabel = self.MainGui.CombatPage.PriorityCountLabel 
 
+        ToggleButton.Text = self.Enabled and "Auto Farm: ON" or "Auto Farm: OFF"
+        ToggleButton.BackgroundColor3 = self.Enabled and Color3.fromRGB(70, 150, 70) or Color3.fromRGB(150, 70, 70)
+        
+        ModeButton.Text = "Mode: " .. self.Mode
+        
+        AutoIgnoreButton.Text = self.AutoIgnoreEnabled and "10s Auto-Ignore: ON" or "10s Auto-Ignore: OFF"
+        
+        PriorityCountLabel.Text = string.format("Priority Locations: %d / 10", #self.PriorityLocations)
+    end
+end
+
+function MultiGrinder:setupGUI(ScreenGui)
+    -- Start building the UI inside the provided ScreenGui instance
+    
     local MainFrame = Instance.new("Frame")
     MainFrame.Size = UDim2.new(0, 300, 0, 400)
     MainFrame.Position = UDim2.new(0.5, -150, 0.5, -200)
@@ -523,6 +534,7 @@ function MultiGrinder:setupGUI()
     
     local TabNames = {"General", "Combat", "Mining", "Placeholder 2"}
     local TabButtons = {}
+    local Pages = {}
     
     function MultiGrinder:showTab(name)
         self.CurrentTab = name
@@ -602,30 +614,11 @@ function MultiGrinder:setupGUI()
         return label
     end
 
-    local Pages = {}
-    
     -- General Page
     local GeneralPage = createContentPage(ContentContainer, "General")
     local GeneralLayout = createListLayout(GeneralPage)
     GeneralLayout.Padding = UDim.new(0, 5) 
     
-    function MultiGrinder:updateGUI()
-        if self.MainGui and self.MainGui.GeneralPage then
-            local ToggleButton = self.MainGui.GeneralPage.ToggleButton
-            local ModeButton = self.MainGui.GeneralPage.ModeButton
-            local AutoIgnoreButton = self.MainGui.GeneralPage.AutoIgnoreButton 
-            local PriorityCountLabel = self.MainGui.CombatPage.PriorityCountLabel 
-
-            ToggleButton.Text = self.Enabled and "Auto Farm: ON" or "Auto Farm: OFF"
-            ToggleButton.BackgroundColor3 = self.Enabled and Color3.fromRGB(70, 150, 70) or Color3.fromRGB(150, 70, 70)
-            
-            ModeButton.Text = "Mode: " .. self.Mode
-            
-            AutoIgnoreButton.Text = self.AutoIgnoreEnabled and "10s Auto-Ignore: ON" or "10s Auto-Ignore: OFF"
-            
-            PriorityCountLabel.Text = string.format("Priority Locations: %d / 10", #self.PriorityLocations)
-        end
-    end
 
     local ToggleButton = createButton(GeneralPage, "Starting...", Color3.fromRGB(70, 70, 70), nil, UDim2.new(1, -10, 0, 30))
     ToggleButton.Name = "ToggleButton"
@@ -850,12 +843,6 @@ function MultiGrinder:setupGUI()
     
     self:setMinimizedState(self.IsMinimized)
     self:showTab(self.CurrentTab)
-    
-    self:updateGUI()
-    
-    -- V51 CRITICAL FIX: Use self.PlayerGui which is guaranteed to be ready
-    ScreenGui.Parent = self.PlayerGui
-
 end
 
 --//========================================================================================
@@ -863,7 +850,23 @@ end
 --//========================================================================================
 
 function MultiGrinder:start()
-    self:setupGUI()
+    -- Create ScreenGui
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "MultiBotGUI"
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+    -- V52 CRITICAL FIX: Parent the ScreenGui IMMEDIATELY
+    if self.PlayerGui then
+        ScreenGui.Parent = self.PlayerGui
+        print("[Multi-Bot Debug] ScreenGui parented to PlayerGui. Building components now.")
+    else
+        print("[Multi-Bot Debug] CRITICAL ERROR: PlayerGui not available. Aborting UI setup.")
+        return
+    end
+
+    self:setupGUI(ScreenGui)
+    self:updateGUI() -- Initial UI state update
+
     print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
     
     self.LoopThread = task.spawn(function()
