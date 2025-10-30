@@ -1,6 +1,9 @@
 --[[
-  Refactored Multi-Bot (V47 - Stability Fixes)
+  Refactored Multi-Bot (V48 - Toggle Initialization Fix)
   
+  *** V48 NEW FEATURE / FIX ***
+  - FIX: Refactored the 'ToggleButton' initialization in setupGUI. The button is now created with placeholder text/color, ensuring the subsequent call to self:updateGUI() correctly sets the initial 'Auto Farm: OFF' state based on self.Enabled = false. This eliminates visual redundancy and improves initialization clarity.
+
   *** V47 NEW FEATURE / FIX ***
   - Fixed remaining critical stability bugs related to nil values, especially around camera and target state changes.
   - Fix: Removed accidental code in setupGUI that connected Combat Target Input to the Toggle Button logic, preventing state corruption.
@@ -11,31 +14,6 @@
   - Fixed a critical bug in executeMiningAction where it would *not* find a new target when it needed one.
   - Fixed a typo in the Combat tab (self.CombatNames -> self.CombatTargetNames) that prevented the target list from updating.
   - Updated CONFIG.ScriptName to V47.
-
-  *** V45 NEW FEATURE / FIX (LAG FIX) ***
-  - Optimized findClosestTarget() to fix lag. It now calls Workspace:GetDescendants() only ONCE per search.
-  - This should dramatically reduce lag when the bot is on and searching for targets.
-  - Fixed a critical copy-paste bug from V44.
-  
-  *** V44 NEW FEATURE (Priority Logic) ***
-  - Priority targets are now **any** mob within the 10-unit radius of a set location, ignoring the main TargetNames list.
-  - The bot will teleport to the **center** of the priority location to clear the area, not directly to the mob.
-
-  *** V43 NEW FEATURE (Priority Locations) ***
-  - Added Priority Location logic: Up to 10 locations can be set in the Combat tab.
-  - Mobs spawning within a 10-unit radius of these locations are prioritized over all other targets.
-  
-  *** V42 NEW FEATURE (Auto-Ignore Toggle) ***
-  - Added "10s Auto-Ignore: ON/OFF" toggle button to the General tab.
-  - This allows you to disable the feature that automatically ignores mobs if they are not killed within 10 seconds.
-  - The feature is ON by default.
-  
-  *** V41 FIX: TargetKey Not a Member Error ***
-  - Fix: findClosestTarget now returns two values: the closestTarget (HRP/Part) AND the targetKey (Model/Part) directly.
-  - Fix: executeCombatAction and executeMiningAction were updated to correctly receive and use these two separate return values for better stability.
-
-  *** V40 FIX: Target Re-Acquisition ***
-  - Fix: Modified findClosestTarget and the ignore logic to use a persistent identifier (the top-level Model for Mobs, or the Part itself for Resources) as the key in the IgnoredTargets table. This ensures the bot does not re-acquire an ignored mob if its HumanoidRootPart is destroyed and recreated.
 
 --]]
 
@@ -56,7 +34,7 @@ MultiGrinder.__index = MultiGrinder
 --//========================================================================================
 
 local CONFIG = {
-    ScriptName = "Studlands (V47)", -- V47 Update
+    ScriptName = "Studlands (V48)", -- V48 Update
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -639,7 +617,8 @@ function MultiGrinder:setupGUI()
         end
     end
 
-    local ToggleButton = createButton(GeneralPage, "Auto Farm: OFF", Color3.fromRGB(150, 70, 70), nil, UDim2.new(1, -10, 0, 30))
+    -- V48 FIX: Use generic initial settings so updateGUI sets the correct state immediately.
+    local ToggleButton = createButton(GeneralPage, "Starting...", Color3.fromRGB(70, 70, 70), nil, UDim2.new(1, -10, 0, 30))
     ToggleButton.Name = "ToggleButton"
     ToggleButton.MouseButton1Click:Connect(function()
         self.Enabled = not self.Enabled
