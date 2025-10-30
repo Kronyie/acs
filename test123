@@ -1,13 +1,12 @@
 --[[
-  Refactored Multi-Bot (V53 - Crash Fix & UI Visibility)
+  Refactored Multi-Bot (V55 - Remote Configuration)
   
-  *** V53 CRITICAL FIX (Attempt to index nil with 'Parent') ***
-  - Defensive Check: Added safety checks to ensure `target.Parent` exists before attempting to find the Humanoid, preventing the crash reported on your console when a mob is destroyed by the game.
-  - The line: `local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")`
-  - Is now: `local humanoid = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")`
+  *** V55 NEW FEATURE (CRITICAL FOR FUNCTIONALITY) ***
+  - Remote Config Tab: Added a new "Remotes" tab to allow the user to input the correct RemoteEvent names for Equip, Attack, and Teleport.
+  - This is the most common reason why an exploit script fails to work, even if the GUI loads correctly.
   
-  *** V52 UI VISIBILITY FIX (If UI still doesn't show) ***
-  - RESTRUCTURING: The ScreenGui is parented to PlayerGui *immediately* after its creation in the 'start' function. This is the most reliable method for exploit clients.
+  *** V54 FIX RETAINED (GUI Crash Fix) ***
+  - UI Parenting: The PlayerGui reference often fails in exploit contexts. Retained the fix to explicitly use `game:GetService("StarterGui")` as the parent for the ScreenGui for robust UI injection.
 --]]
 
 --//========================================================================================
@@ -20,13 +19,14 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Camera = Workspace.CurrentCamera
 local Mouse = LocalPlayer:GetMouse() 
-local ReplicatedStorage = game:GetService("ReplicatedStorage") -- Added for remote lookup consistency
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterGui = game:GetService("StarterGui") 
 
 local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
 
 local CONFIG = {
-    ScriptName = "Studlands (V53)", 
+    ScriptName = "Studlands (V55 - Remote Config)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -44,18 +44,17 @@ local CONFIG = {
 function MultiGrinder:new()
     local self = setmetatable({}, MultiGrinder)
 
-    -- CRITICAL UI SETUP LINES (V51 Fix)
     if LocalPlayer then
         self.Player = LocalPlayer
-        -- This line is essential for the UI to appear on the client's screen
-        self.PlayerGui = self.Player:WaitForChild("PlayerGui")
+        -- V54 Fix: Using StarterGui as the parent for the ScreenGui
+        self.GUIParent = StarterGui 
     else
         print("[Multi-Bot Debug] ERROR: LocalPlayer not found during initialization.")
-        return nil -- Abort if the player context is missing
+        return nil 
     end
     
     -- State Variables
-    self.Enabled = false -- Start OFF by default
+    self.Enabled = false 
     self.Mode = CONFIG.DefaultMode 
     self.CurrentTarget = nil 
     self.CurrentTargetIdentifier = nil 
@@ -81,33 +80,46 @@ function MultiGrinder:new()
     self.MiningTargetNames = CONFIG.DefaultMiningTargetNames
     
     -- Remote Event References (Customize these for your game)
-    self.Remotes = {
-        Equip = "EquipToolEvent",    -- Replace with actual remote name
-        Attack = "AttackEvent",      -- Replace with actual remote name
-        Teleport = "TeleportEvent",  -- Replace with actual remote name (if needed)
-        
-        -- Fallback for basic exploits
-        TeleportFallback = nil, 
-        AttackFallback = nil,
+    -- These names can be changed in the new "Remotes" GUI tab!
+    self.RemoteNames = {
+        Equip = "EquipToolEvent",    -- Placeholder for the Equip Remote Name
+        Attack = "AttackEvent",      -- Placeholder for the Attack Remote Name
+        Teleport = "TeleportEvent",  -- Placeholder for the Teleport Remote Name
     }
     
-    -- Attempt to find remotes in ReplicatedStorage or other common places
-    local FoundRemotes = {}
-    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
-        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-            FoundRemotes[obj.Name] = obj
-        end
-    end
-    
-    self.Remotes.AttackFallback = FoundRemotes["FireClient"] or FoundRemotes["AttackEvent"] -- Example fallback
-    self.Remotes.TeleportFallback = FoundRemotes["TeleportEvent"] or FoundRemotes["SetCharacterPosition"] -- Example fallback
-    
+    -- Actual Remote Event Instances (resolved at runtime)
+    self.Remotes = {
+        Equip = nil,
+        Attack = nil,
+        Teleport = nil,
+    }
+
+    self:resolveRemotes()
+
     return self
 end
 
 --//========================================================================================
 --// HELPER FUNCTIONS
 --//========================================================================================
+
+function MultiGrinder:resolveRemotes()
+    -- Searches ReplicatedStorage and its descendants for remotes matching the names in self.RemoteNames
+    
+    self.Remotes.Equip = ReplicatedStorage:FindFirstChild(self.RemoteNames.Equip, true)
+    self.Remotes.Attack = ReplicatedStorage:FindFirstChild(self.RemoteNames.Attack, true)
+    self.Remotes.Teleport = ReplicatedStorage:FindFirstChild(self.RemoteNames.Teleport, true)
+
+    -- Fallbacks (if the main name doesn't work, we still check common names)
+    if not self.Remotes.Attack then
+        self.Remotes.Attack = ReplicatedStorage:FindFirstChild("FireClient", true)
+    end
+    
+    -- Update GUI to show found/missing status
+    if self.MainGui and self.MainGui.RemotesPage then
+        self:updateGUI()
+    end
+end
 
 function MultiGrinder:getHumanoidRootPart()
     return LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -116,32 +128,34 @@ end
 function MultiGrinder:equipTool(toolName)
     if self.EquippedToolName == toolName then return true end
 
-    -- Attempt to find the tool in the player's Backpack or Character
+    -- 1. Find the tool
     local tool = LocalPlayer.Backpack:FindFirstChild(toolName) or LocalPlayer.Character:FindFirstChild(toolName)
     
     if tool and self.Remotes.Equip then
-        -- Assuming a generic equip remote takes the tool instance or name
+        -- 2. Fire the Equip Remote
         self.Remotes.Equip:FireServer(tool)
         self.EquippedToolName = toolName
+        print(string.format("[Multi-Bot Debug] Tool equipped via Remote: %s", toolName))
         return true
     elseif tool then
-        -- Basic tool equipping via parenting (may not work in all games)
+        -- 3. Basic tool equipping fallback (may not work in protected games)
         tool.Parent = LocalPlayer.Character
         self.EquippedToolName = toolName
+        print(string.format("[Multi-Bot Debug] Tool equipped via Parenting: %s", toolName))
         return true
     end
     
+    print(string.format("[Multi-Bot Debug] Failed to equip tool '%s': Tool or Equip Remote not found.", toolName))
     return false
 end
 
 function MultiGrinder:attack(target)
     if self.Remotes.Attack then
-        -- Assuming a generic attack remote takes the target instance
+        -- Assuming the attack remote takes the target instance
         self.Remotes.Attack:FireServer(target)
-    elseif self.Remotes.AttackFallback then
-        self.Remotes.AttackFallback:FireServer(target)
     end
-    -- Fallback to tool usage (may work if tool is not protected)
+    
+    -- Fallback to tool usage (may work if the tool's Handle is touched by the target)
     local tool = LocalPlayer.Character:FindFirstChild(self.EquippedToolName)
     if tool and tool:IsA("Tool") and tool.Activated then
         tool.Activated:Fire()
@@ -149,23 +163,23 @@ function MultiGrinder:attack(target)
 end
 
 function MultiGrinder:teleport(position)
+    local hrp = self:getHumanoidRootPart()
+    if not hrp then return end
+
     if self.Remotes.Teleport then
+        -- Fire the Teleport Remote
         self.Remotes.Teleport:FireServer(position)
-    elseif self.Remotes.TeleportFallback then
-        self.Remotes.TeleportFallback:FireServer(position)
     else
-        local hrp = self:getHumanoidRootPart()
-        if hrp then
-            hrp.CFrame = CFrame.new(position + Vector3.new(0, 3, 0)) -- Small Y offset to avoid clipping
-        end
+        -- Direct CFrame teleport as a last resort
+        hrp.CFrame = CFrame.new(position + Vector3.new(0, 3, 0)) 
     end
 end
 
 function MultiGrinder:saveCamera(hrp)
-    if not self.OriginalCameraCFrame then
+    if not self.OriginalCameraCFrame and hrp then
         self.OriginalCameraCFrame = Camera.CFrame
-        -- Point camera towards the target or at least away from the ground
         Camera.CameraType = Enum.CameraType.Scriptable
+        -- Look slightly away from the player's position
         Camera.CFrame = CFrame.new(hrp.Position + Vector3.new(0, 10, 0), hrp.Position + Vector3.new(0, 5, -10))
     end
 end
@@ -212,7 +226,7 @@ function MultiGrinder:findClosestTarget(position, names)
         local targetKey = nil
         
         -- Check for Mobs (Combat)
-        if obj:IsA("Model") and obj:FindFirstChildOfClass("Humanoid") and obj.Parent == Workspace and obj ~= LocalPlayer.Character then
+        if isCombat and obj:IsA("Model") and obj:FindFirstChildOfClass("Humanoid") and obj.Parent == Workspace and obj ~= LocalPlayer.Character then
             local humanoid = obj:FindFirstChildOfClass("Humanoid")
             if not humanoid or humanoid.Health <= 0 then continue end
             
@@ -222,7 +236,7 @@ function MultiGrinder:findClosestTarget(position, names)
             targetPart = hrp
             targetKey = obj -- The Model
 
-            -- Priority Check (Combat Only) - Check ALL mobs
+            -- 1. Priority Check 
             if hasPriorityLocations then
                 if not self.IgnoredTargets[targetKey] then
                     for _, prioLoc in ipairs(self.PriorityLocations) do
@@ -242,7 +256,7 @@ function MultiGrinder:findClosestTarget(position, names)
                 end
             end
 
-            -- Normal Target Check - Check ONLY named mobs
+            -- 2. Normal Target Check 
             for _, name in ipairs(names) do
                 if string.lower(obj.Name) == string.lower(name) then 
                     
@@ -301,8 +315,6 @@ function MultiGrinder:executeCombatAction(hrp)
     local target = self.CurrentTarget
     local priorityLoc = self.CurrentPriorityLocation 
     
-    print(string.format("[Multi-Bot Debug] MODE: Combat. HRP Found: %s", tostring(hrp.Position))) 
-
     local needsNewTarget = not target or not target.Parent 
 
     if needsNewTarget then
@@ -328,7 +340,7 @@ function MultiGrinder:executeCombatAction(hrp)
         self.CurrentTargetIdentifier = newTargetKey 
         self.CurrentPriorityLocation = priorityLocation 
         self.TargetAcquiredTime = tick() 
-        print(string.format("[Multi-Bot Debug] Acquired Target: %s (%s)", newTargetKey.Name, newTargetKey:IsA("Model") and "Model" or "Part")) 
+        print(string.format("[Multi-Bot Debug] Acquired Target: %s", newTargetKey.Name)) 
         self:updateGUI()
         
         -- Teleport to new target or priority location
@@ -342,18 +354,21 @@ function MultiGrinder:executeCombatAction(hrp)
     else
         -- Target is still valid, check tool and attack
         if not self:equipTool(toolName) then
-            print(string.format("[Multi-Bot Debug] Failed to equip combat tool: %s", toolName))
+            -- If equipping fails, don't stop the loop, just keep trying
             return false 
         end
         
-        -- Check for auto-ignore (V53 FIX: Check target.Parent before accessing Humanoid)
-        local humanoid = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
+        -- V53 FIX: Check target.Parent before accessing Humanoid
+        local targetModel = target.Parent 
+        local humanoid = targetModel and targetModel:FindFirstChildOfClass("Humanoid")
         
+        -- Auto-Ignore check (only for combat targets)
         if self.AutoIgnoreEnabled and humanoid and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
             
+            -- If not a priority target OR the target is already dead (Health <= 0)
             if not self.CurrentPriorityLocation or humanoid.Health <= 0 then
                 
-                local targetName = target.Parent and target.Parent.Name or target.Name
+                local targetName = targetModel and targetModel.Name or target.Name
                 print(string.format("[Multi-Bot Debug] Target %s alive for > 10s. Auto-ignoring.", targetName))
                 
                 if self.CurrentTargetIdentifier then
@@ -375,7 +390,8 @@ function MultiGrinder:executeCombatAction(hrp)
             self:teleport(target.Position)
         end
         
-        self:attack(target.Parent)
+        -- Attack the target's Model (or HRP's parent)
+        self:attack(targetModel)
     end
     
     return true
@@ -385,8 +401,6 @@ function MultiGrinder:executeMiningAction(hrp)
     local toolName = self.MiningToolName
     local resource = self.CurrentTarget
 
-    print(string.format("[Multi-Bot Debug] MODE: Mining. HRP Found: %s", tostring(hrp.Position))) 
-    
     local needsNewTarget = not resource or not resource.Parent
 
     if needsNewTarget then
@@ -400,7 +414,6 @@ function MultiGrinder:executeMiningAction(hrp)
             
             self.CurrentTarget = nil 
             self.CurrentTargetIdentifier = nil 
-            self.CurrentPriorityLocation = nil 
             self.TargetAcquiredTime = nil 
             restoreCamera(self)
             self:updateGUI()
@@ -411,7 +424,7 @@ function MultiGrinder:executeMiningAction(hrp)
         self.CurrentTarget = newResource
         self.CurrentTargetIdentifier = newResourceKey 
         self.TargetAcquiredTime = tick() 
-        print(string.format("[Multi-Bot Debug] Acquired Resource: %s (%s)", newResourceKey.Name, newResourceKey:IsA("Model") and "Model" or "Part")) 
+        print(string.format("[Multi-Bot Debug] Acquired Resource: %s", newResourceKey.Name)) 
         self:updateGUI()
         
         self:teleport(newResource.Position)
@@ -420,12 +433,12 @@ function MultiGrinder:executeMiningAction(hrp)
     else
         -- Target is still valid, check tool and attack
         if not self:equipTool(toolName) then
-            print(string.format("[Multi-Bot Debug] Failed to equip mining tool: %s", toolName))
             return false 
         end
         
         self:teleport(resource.Position)
         
+        -- Attack the resource Part
         self:attack(resource)
     end
     
@@ -437,44 +450,66 @@ end
 --//========================================================================================
 
 function MultiGrinder:setMinimizedState(isMinimized)
+    if not self.MainGui or not self.MainGui.MainFrame then return end
+    
     self.IsMinimized = isMinimized
-    if self.MainGui and self.MainGui.MainFrame then
-        -- Resize the main frame
-        self.MainGui.MainFrame.Size = isMinimized and UDim2.new(0, 300, 0, 30) or UDim2.new(0, 300, 0, 400)
-        
-        -- Update the minimize button text
-        self.MainGui.MinimizeButton.Text = isMinimized and "+" or "-"
-        
-        -- Hide/show tabs and content
-        self.MainGui.Tabs.Visible = not isMinimized
-        for _, page in pairs(self.MainGui.Pages) do
-            -- Only show the current tab if not minimized
-            local isCurrentTab = (page.Name == self.CurrentTab .. "Page")
-            page.Visible = not isMinimized and isCurrentTab
-        end
+    local MainFrame = self.MainGui.MainFrame
+
+    -- Resize the main frame
+    MainFrame.Size = isMinimized and UDim2.new(0, 300, 0, 30) or UDim2.new(0, 300, 0, 400)
+    
+    -- Update the minimize button text
+    self.MainGui.MinimizeButton.Text = isMinimized and "+" or "-"
+    
+    -- Hide/show tabs and content
+    self.MainGui.Tabs.Visible = not isMinimized
+    for _, page in pairs(self.MainGui.Pages) do
+        local isCurrentTab = (page.Name == self.CurrentTab .. "Page")
+        page.Visible = not isMinimized and isCurrentTab
+    end
+end
+
+function MultiGrinder:getRemoteStatus(remoteName)
+    local remote = self.Remotes[remoteName]
+    local name = self.RemoteNames[remoteName]
+    
+    if remote then
+        return string.format("Found: %s (Type: %s)", remote.Name, remote.ClassName), Color3.fromRGB(50, 150, 50) -- Green
+    else
+        return string.format("Missing: %s", name), Color3.fromRGB(150, 50, 50) -- Red
     end
 end
 
 function MultiGrinder:updateGUI()
-    if self.MainGui and self.MainGui.GeneralPage then
+    if self.MainGui then
+        -- General Tab
         local ToggleButton = self.MainGui.GeneralPage.ToggleButton
-        local ModeButton = self.MainGui.GeneralPage.ModeButton
-        local AutoIgnoreButton = self.MainGui.GeneralPage.AutoIgnoreButton 
-        local PriorityCountLabel = self.MainGui.CombatPage.PriorityCountLabel 
-
         ToggleButton.Text = self.Enabled and "Auto Farm: ON" or "Auto Farm: OFF"
         ToggleButton.BackgroundColor3 = self.Enabled and Color3.fromRGB(70, 150, 70) or Color3.fromRGB(150, 70, 70)
+        self.MainGui.GeneralPage.ModeButton.Text = "Mode: " .. self.Mode
+        self.MainGui.GeneralPage.AutoIgnoreButton.Text = self.AutoIgnoreEnabled and "10s Auto-Ignore: ON" or "10s Auto-Ignore: OFF"
         
-        ModeButton.Text = "Mode: " .. self.Mode
+        -- Combat Tab
+        self.MainGui.CombatPage.PriorityCountLabel.Text = string.format("Priority Locations: %d / 10", #self.PriorityLocations)
         
-        AutoIgnoreButton.Text = self.AutoIgnoreEnabled and "10s Auto-Ignore: ON" or "10s Auto-Ignore: OFF"
-        
-        PriorityCountLabel.Text = string.format("Priority Locations: %d / 10", #self.PriorityLocations)
+        -- Remotes Tab
+        if self.MainGui.RemotesPage then
+            local equipStatus, equipColor = self:getRemoteStatus("Equip")
+            self.MainGui.RemotesPage.EquipStatusLabel.Text = equipStatus
+            self.MainGui.RemotesPage.EquipStatusLabel.TextColor3 = equipColor
+            
+            local attackStatus, attackColor = self:getRemoteStatus("Attack")
+            self.MainGui.RemotesPage.AttackStatusLabel.Text = attackStatus
+            self.MainGui.RemotesPage.AttackStatusLabel.TextColor3 = attackColor
+            
+            local teleportStatus, teleportColor = self:getRemoteStatus("Teleport")
+            self.MainGui.RemotesPage.TeleportStatusLabel.Text = teleportStatus
+            self.MainGui.RemotesPage.TeleportStatusLabel.TextColor3 = teleportColor
+        end
     end
 end
 
 function MultiGrinder:setupGUI(ScreenGui)
-    -- Start building the UI inside the provided ScreenGui instance
     
     local MainFrame = Instance.new("Frame")
     MainFrame.Size = UDim2.new(0, 300, 0, 400)
@@ -489,7 +524,7 @@ function MultiGrinder:setupGUI(ScreenGui)
     TitleBar.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
     TitleBar.Parent = MainFrame
     TitleBar.Active = true
-    TitleBar.Draggable = true -- Use built-in dragging if available
+    TitleBar.Draggable = true 
     
     local Title = Instance.new("TextLabel")
     Title.Text = CONFIG.ScriptName
@@ -533,7 +568,7 @@ function MultiGrinder:setupGUI(ScreenGui)
     TabLayout.FillDirection = Enum.FillDirection.Horizontal
     TabLayout.Parent = Tabs
     
-    local TabNames = {"General", "Combat", "Mining", "Placeholder 2"}
+    local TabNames = {"General", "Combat", "Mining", "Remotes"}
     local TabButtons = {}
     local Pages = {}
     
@@ -609,6 +644,19 @@ function MultiGrinder:setupGUI(ScreenGui)
         label.BackgroundTransparency = 1
         label.TextColor3 = Color3.fromRGB(200, 200, 200)
         label.Font = Enum.Font.Gotham
+        label.TextSize = 12
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = parent
+        return label
+    end
+    
+    local function createStatusLabel(parent, text, color)
+        local label = Instance.new("TextLabel")
+        label.Text = text
+        label.Size = UDim2.new(1, 0, 0, 20)
+        label.BackgroundTransparency = 1
+        label.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+        label.Font = Enum.Font.GothamBold
         label.TextSize = 12
         label.TextXAlignment = Enum.TextXAlignment.Left
         label.Parent = parent
@@ -792,18 +840,57 @@ function MultiGrinder:setupGUI(ScreenGui)
 
     Pages["Mining"] = MiningPage
 
-    local Placeholder2Page = createContentPage(ContentContainer, "Placeholder 2")
-    local Placeholder2Layout = createListLayout(Placeholder2Page)
-    Placeholder2Layout.Padding = UDim.new(0, 5)
+    -- Remotes Page (NEW IN V55)
+    local RemotesPage = createContentPage(ContentContainer, "Remotes")
+    local RemotesLayout = createListLayout(RemotesPage)
+    RemotesLayout.Padding = UDim.new(0, 5) 
 
-    local LabelP2 = Instance.new("TextLabel")
-    LabelP2.Text = "More settings here."
-    LabelP2.Size = UDim2.new(1, 0, 0, 30)
-    LabelP2.BackgroundTransparency = 1
-    LabelP2.TextColor3 = Color3.fromRGB(150, 150, 150)
-    LabelP2.Parent = Placeholder2Page
-    Pages["Placeholder 2"] = Placeholder2Page
+    local NoteLabel = createInputLabel(RemotesPage, "Input RemoteEvent names found in ReplicatedStorage:")
+    NoteLabel.TextColor3 = Color3.fromRGB(255, 180, 0)
+    NoteLabel.TextXAlignment = Enum.TextXAlignment.Center
+    
+    -- EQUIP Remote
+    createInputLabel(RemotesPage, "Equip Tool Remote Name:")
+    local EquipInput = createTextBox(RemotesPage, self.RemoteNames.Equip, "e.g. 'EquipToolEvent'")
+    EquipInput.Name = "EquipInput"
+    EquipInput.FocusLost:Connect(function()
+        self.RemoteNames.Equip = EquipInput.Text
+        self:resolveRemotes()
+        self:updateGUI()
+    end)
+    local EquipStatusLabel = createStatusLabel(RemotesPage, "Status: Not Checked", Color3.fromRGB(255, 255, 255))
+    EquipStatusLabel.Name = "EquipStatusLabel"
+    
+    -- ATTACK Remote
+    createInputLabel(RemotesPage, "Attack Remote Name:")
+    local AttackInput = createTextBox(RemotesPage, self.RemoteNames.Attack, "e.g. 'AttackEvent' or 'FireClient'")
+    AttackInput.Name = "AttackInput"
+    AttackInput.FocusLost:Connect(function()
+        self.RemoteNames.Attack = AttackInput.Text
+        self:resolveRemotes()
+        self:updateGUI()
+    end)
+    local AttackStatusLabel = createStatusLabel(RemotesPage, "Status: Not Checked", Color3.fromRGB(255, 255, 255))
+    AttackStatusLabel.Name = "AttackStatusLabel"
+    
+    -- TELEPORT Remote
+    createInputLabel(RemotesPage, "Teleport Remote Name:")
+    local TeleportInput = createTextBox(RemotesPage, self.RemoteNames.Teleport, "e.g. 'TeleportEvent'")
+    TeleportInput.Name = "TeleportInput"
+    TeleportInput.FocusLost:Connect(function()
+        self.RemoteNames.Teleport = TeleportInput.Text
+        self:resolveRemotes()
+        self:updateGUI()
+    end)
+    local TeleportStatusLabel = createStatusLabel(RemotesPage, "Status: Not Checked", Color3.fromRGB(255, 255, 255))
+    TeleportStatusLabel.Name = "TeleportStatusLabel"
 
+    local RecheckButton = createButton(RemotesPage, "Re-Check Remotes", Color3.fromRGB(70, 70, 150), nil, UDim2.new(1, -10, 0, 30))
+    RecheckButton.MouseButton1Click:Connect(function()
+        self:resolveRemotes()
+    end)
+    
+    Pages["Remotes"] = RemotesPage
 
     self.MainGui = {
         ScreenGui = ScreenGui,
@@ -828,6 +915,11 @@ function MultiGrinder:setupGUI(ScreenGui)
         MiningPage = {
             ToolNameInput = MToolNameInput,
             TargetNamesInput = MTargetNamesInput,
+        },
+        RemotesPage = {
+            EquipStatusLabel = EquipStatusLabel,
+            AttackStatusLabel = AttackStatusLabel,
+            TeleportStatusLabel = TeleportStatusLabel,
         }
     }
 
@@ -856,16 +948,16 @@ function MultiGrinder:start()
     ScreenGui.Name = "MultiBotGUI"
     ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
-    -- V52/V53 CRITICAL UI FIX: Parent the ScreenGui IMMEDIATELY
-    if self.PlayerGui then
-        ScreenGui.Parent = self.PlayerGui
-        print("[Multi-Bot Debug] ScreenGui parented to PlayerGui. Building components now.")
+    -- V54 CRITICAL FIX: Parent the ScreenGui to StarterGui
+    if self.GUIParent then
+        ScreenGui.Parent = self.GUIParent
     else
-        print("[Multi-Bot Debug] CRITICAL ERROR: PlayerGui not available. Aborting UI setup.")
+        print("[Multi-Bot Debug] CRITICAL ERROR: GUI Parent not available. Aborting UI setup.")
         return
     end
 
     self:setupGUI(ScreenGui)
+    self:resolveRemotes() -- Initial remote check
     self:updateGUI() -- Initial UI state update
 
     print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
@@ -876,7 +968,6 @@ function MultiGrinder:start()
                 local hrp = self:getHumanoidRootPart()
                 
                 if not hrp then 
-                    -- print("[Multi-Bot Debug] Waiting for character HRP...")
                     continue 
                 end
                 
