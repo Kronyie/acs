@@ -1,13 +1,10 @@
 --[[
-  Refactored Multi-Bot (V59 - CRITICAL UI FIXES)
+  Refactored Multi-Bot (V60 - CRITICAL UI OVERHAUL)
   
-  *** V59 CRITICAL FIXES ***
-  1. Content Fix (Blank Tabs): The ContentContainer size was recalculated and set to an absolute height (0, 340) to guarantee the content pages (Combat, Mining, Remotes) are visible and correctly fill the remaining space when the UI is maximized.
-  2. Interactivity Fix: Explicitly set ZIndex = 2 on all clickable elements (tabs, buttons) and the TitleBar. This ensures buttons can be clicked and the frame can be dragged, resolving the immovable and unresponsive button issues.
-  
-  *** V58 Features Retained ***
-  - Cleaned-up script name: "Studlands"
-  - Live debug log on the General tab for troubleshooting farming issues.
+  *** V60 CRITICAL FIXES ***
+  1. Layout Overhaul: Removed the unpredictable UIListLayout. The TitleBar, Tabs, and ContentContainer are now absolutely positioned, guaranteeing the 340px height for content and fixing the "blank page" issue.
+  2. Manual Dragging: Replaced the flaky 'Draggable = true' property with a custom drag script bound to the TitleBar. This ensures the frame can be moved.
+  3. Input Fix: Set ScreenGui.IgnoreGuiInset = true for better button responsiveness near the top of the screen.
 --]]
 
 --//========================================================================================
@@ -27,18 +24,17 @@ local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
 
 local CONFIG = {
-    ScriptName = "Studlands", -- Cleaned up name
+    ScriptName = "Studlands",
     DefaultMode = "Combat", 
-    FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
+    FarmSpeed = 0.05,
     
-    -- Using the user's requested defaults
     DefaultCombatToolName = "Katana", 
     DefaultCombatTargetNames = "Warrior,Archer,Mage,Boss", 
     
     DefaultMiningToolName = "Iron Pickaxe",
     DefaultMiningTargetNames = "Iron,Rock",
     
-    MaxLogLines = 10, -- Max lines to show in the debug log
+    MaxLogLines = 10,
 }
 
 --//========================================================================================
@@ -68,7 +64,7 @@ function MultiGrinder:new()
     self.IsMinimized = false 
     self.CurrentTab = "General"
     self.LoopThread = nil
-    self.DebugLog = {} -- Stores log messages
+    self.DebugLog = {} 
     
     -- Feature Variables
     self.IgnoredTargets = {} 
@@ -86,9 +82,9 @@ function MultiGrinder:new()
     
     -- Remote Event References (Set to common placeholders)
     self.RemoteNames = {
-        Equip = "EquipToolEvent",    -- Better placeholder
-        Attack = "AttackRemote",     -- Better placeholder
-        Teleport = "TeleportRemote", -- Better placeholder
+        Equip = "EquipToolEvent",
+        Attack = "AttackRemote",
+        Teleport = "TeleportRemote",
     }
     
     -- Actual Remote Event Instances (resolved at runtime)
@@ -106,21 +102,16 @@ end
 --//========================================================================================
 
 function MultiGrinder:log(message)
-    -- Add timestamp and clean message
     local timeStr = os.date("%H:%M:%S", os.time())
     local cleanMessage = string.format("[%s] %s", timeStr, message)
     
-    -- Add to the front of the log list
     table.insert(self.DebugLog, 1, cleanMessage) 
     
-    -- Trim log if it exceeds max size
     while #self.DebugLog > CONFIG.MaxLogLines do
         table.remove(self.DebugLog)
     end
     
-    -- Update the GUI Log Label
     if self.MainGui and self.MainGui.GeneralPage and self.MainGui.GeneralPage.DebugLogLabel then
-        -- This logic ensures the scroll bar (if needed) always shows the newest entries at the top
         self.MainGui.GeneralPage.DebugLogLabel.Text = table.concat(self.DebugLog, "\n")
     end
     
@@ -128,8 +119,10 @@ function MultiGrinder:log(message)
 end
 
 --//========================================================================================
---// HELPER FUNCTIONS
+--// HELPER FUNCTIONS (UNCHANGED)
 --//========================================================================================
+-- (Functions like resolveRemotes, getHumanoidRootPart, equipTool, attack, teleport, saveCamera, 
+-- restoreCamera, getTargetNames, findClosestTarget remain identical to V59 logic)
 
 function MultiGrinder:resolveRemotes()
     self:log("Resolving remote events...")
@@ -139,7 +132,6 @@ function MultiGrinder:resolveRemotes()
     self.Remotes.Attack = ReplicatedStorage:FindFirstChild(self.RemoteNames.Attack, true)
     self.Remotes.Teleport = ReplicatedStorage:FindFirstChild(self.RemoteNames.Teleport, true)
 
-    -- Update GUI to show found/missing status
     if self.MainGui and self.MainGui.RemotesPage then
         self:updateGUI()
     end
@@ -160,17 +152,14 @@ function MultiGrinder:equipTool(toolName)
     
     self:log(string.format("Attempting to equip tool: %s", toolName))
 
-    -- 1. Find the tool
     local tool = LocalPlayer.Backpack:FindFirstChild(toolName) or LocalPlayer.Character:FindFirstChild(toolName)
     
     if tool and self.Remotes.Equip then
-        -- 2. Fire the Equip Remote
         self.Remotes.Equip:FireServer(tool)
         self.EquippedToolName = toolName
         self:log(string.format("Equipped tool via Remote: %s", toolName))
         return true
     elseif tool then
-        -- 3. Basic tool equipping fallback (may not work in protected games)
         tool.Parent = LocalPlayer.Character
         self.EquippedToolName = toolName
         self:log(string.format("Equipped tool via Parenting (Fallback): %s", toolName))
@@ -189,7 +178,6 @@ function MultiGrinder:attack(target)
         self:log("Attack Remote is MISSING. Falling back to tool activation.")
     end
     
-    -- Fallback to tool usage
     local tool = LocalPlayer.Character:FindFirstChild(self.EquippedToolName)
     if tool and tool:IsA("Tool") and tool.Activated then
         tool.Activated:Fire()
@@ -206,7 +194,6 @@ function MultiGrinder:teleport(position)
         self:log("Firing Teleport Remote.")
         self.Remotes.Teleport:FireServer(targetCFrame)
     else
-        -- Direct CFrame teleport as a last resort
         hrp.CFrame = targetCFrame
         self:log("Using Direct CFrame Teleport (Fallback).")
     end
@@ -246,12 +233,10 @@ function MultiGrinder:findClosestTarget(position, names)
     local closestTargetKey = nil 
     local minDistance = math.huge
     
-    -- Iterate only through models/parts in Workspace 
     for _, obj in ipairs(Workspace:GetChildren()) do
         local targetPart = nil
         local targetKey = nil
         
-        -- Check for Mobs (Combat)
         if self.Mode == "Combat" and obj:IsA("Model") and obj:FindFirstChildOfClass("Humanoid") and obj ~= LocalPlayer.Character then
             local humanoid = obj:FindFirstChildOfClass("Humanoid")
             local hrp = obj:FindFirstChild("HumanoidRootPart")
@@ -259,13 +244,12 @@ function MultiGrinder:findClosestTarget(position, names)
             if not hrp or not humanoid or humanoid.Health <= 0 then continue end
             
             targetPart = hrp
-            targetKey = obj -- The Model, used for ignoring
+            targetKey = obj
             
             if self.IgnoredTargets[targetKey] then continue end
             
             local distToPlayer = (targetPart.Position - position).Magnitude
 
-            -- Normal Target Check (checking name)
             for _, name in ipairs(names) do
                 if string.lower(obj.Name) == string.lower(name) and distToPlayer < minDistance then 
                     minDistance = distToPlayer
@@ -275,12 +259,11 @@ function MultiGrinder:findClosestTarget(position, names)
                 end
             end
         
-        -- Check for Resources (Mining)
         elseif self.Mode == "Mining" and obj:IsA("BasePart") then
              for _, name in ipairs(names) do
                 if string.lower(obj.Name) == string.lower(name) then 
                     targetPart = obj
-                    targetKey = obj -- The Part, used for ignoring
+                    targetKey = obj
                     
                     if self.IgnoredTargets[targetKey] then continue end
 
@@ -298,10 +281,6 @@ function MultiGrinder:findClosestTarget(position, names)
     
     return closestTargetPart, closestTargetKey, nil 
 end
-
---//========================================================================================
---// ACTION EXECUTION
---//========================================================================================
 
 function MultiGrinder:executeCombatAction(hrp)
     local toolName = self.CombatToolName
@@ -322,19 +301,16 @@ function MultiGrinder:executeCombatAction(hrp)
             return false 
         end
         
-        -- New target found
         self.CurrentTarget = newTarget
         self.CurrentTargetIdentifier = newTargetKey 
         self.TargetAcquiredTime = tick() 
         self:log(string.format("Acquired Target: %s", newTargetKey.Name)) 
         self:updateGUI()
         
-        -- Teleport to new target
         self:teleport(newTarget.Position)
         self:saveCamera(hrp)
         
     else
-        -- Target is still valid, check tool and attack
         if not self:equipTool(toolName) then
             return false 
         end
@@ -342,7 +318,6 @@ function MultiGrinder:executeCombatAction(hrp)
         local targetModel = self.CurrentTargetIdentifier 
         local humanoid = targetModel and targetModel:FindFirstChildOfClass("Humanoid")
         
-        -- Auto-Ignore check 
         if self.AutoIgnoreEnabled and humanoid and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
             
             if humanoid.Health <= 0 then
@@ -361,7 +336,6 @@ function MultiGrinder:executeCombatAction(hrp)
             return false 
         end
         
-        -- Teleport and Attack
         self:teleport(target.Position)
         self:attack(targetModel)
     end
@@ -388,7 +362,6 @@ function MultiGrinder:executeMiningAction(hrp)
             return false 
         end
         
-        -- New target found
         self.CurrentTarget = newResource
         self.CurrentTargetIdentifier = newResourceKey 
         self.TargetAcquiredTime = tick() 
@@ -399,22 +372,21 @@ function MultiGrinder:executeMiningAction(hrp)
         self:saveCamera(hrp)
         
     else
-        -- Target is still valid, check tool and attack
         if not self:equipTool(toolName) then
             return false 
         end
         
         self:teleport(resource.Position)
         
-        -- Attack the resource Part (CurrentTargetIdentifier is the Part itself)
         self:attack(self.CurrentTargetIdentifier)
     end
     
     return true
 end
 
+
 --//========================================================================================
---// GUI
+--// GUI (OVERHAULED FOR ABSOLUTE POSITIONING)
 --//========================================================================================
 
 function MultiGrinder:setMinimizedState(isMinimized)
@@ -422,15 +394,19 @@ function MultiGrinder:setMinimizedState(isMinimized)
     
     self.IsMinimized = isMinimized
     local MainFrame = self.MainGui.MainFrame
+    local Tabs = self.MainGui.Tabs
+    local ContentContainer = self.MainGui.ContentContainer
 
     -- Resize the main frame (400px tall when maximized)
     MainFrame.Size = isMinimized and UDim2.new(0, 300, 0, 30) or UDim2.new(0, 300, 0, 400)
     
-    -- Update the minimize button text
-    self.MainGui.MinimizeButton.Text = isMinimized and "+" or "−" -- Use a cleaner minus symbol
+    -- Hide/show tabs and content containers
+    Tabs.Visible = not isMinimized
+    ContentContainer.Visible = not isMinimized
     
-    -- Hide/show tabs and content
-    self.MainGui.Tabs.Visible = not isMinimized
+    -- Update the minimize button text
+    self.MainGui.MinimizeButton.Text = isMinimized and "+" or "−" 
+    
     -- Ensure content pages are only visible when maximized AND it's the current tab
     for _, page in pairs(self.MainGui.Pages) do
         local isCurrentTab = (page.Name == self.CurrentTab .. "Page")
@@ -480,11 +456,48 @@ function MultiGrinder:updateGUI()
     end
 end
 
+-- Custom Drag Function
+function MultiGrinder:setupDrag(frameToMove, dragHandle)
+    local dragging = false
+    local dragStart = nil
+    local frameStart = nil
+
+    dragHandle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = UserInputService:GetMouseLocation()
+            frameStart = frameToMove.Position
+            -- Capture the mouse/touch input
+            UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+        end
+    end)
+
+    dragHandle.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if dragging then
+                dragging = false
+                -- Release the mouse/touch
+                UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+            end
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local dragDelta = UserInputService:GetMouseLocation() - dragStart
+            local newX = frameStart.X.Offset + dragDelta.X
+            local newY = frameStart.Y.Offset + dragDelta.Y
+            frameToMove.Position = UDim2.new(frameToMove.Position.X.Scale, newX, frameToMove.Position.Y.Scale, newY)
+        end
+    end)
+end
+
 function MultiGrinder:setupGUI()
     
     local ScreenGui = Instance.new("ScreenGui")
     ScreenGui.Name = "MultiBotGUI"
     ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    ScreenGui.IgnoreGuiInset = true -- CRITICAL FIX 
     ScreenGui.Parent = self.GUIParent
 
     local MainFrame = Instance.new("Frame")
@@ -493,22 +506,19 @@ function MultiGrinder:setupGUI()
     MainFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
     MainFrame.BorderSizePixel = 0
     MainFrame.Parent = ScreenGui
+    -- NOTE: UIListLayout REMOVED to force absolute positioning and fix layout issues.
+
     
-    -- Add a UIListLayout to the MainFrame to stack the header, tabs, and content cleanly
-    local MainLayout = Instance.new("UIListLayout")
-    MainLayout.FillDirection = Enum.FillDirection.Vertical
-    MainLayout.Padding = UDim.new(0, 0) -- No padding to prevent gaps
-    MainLayout.Parent = MainFrame
-    
-    -- TitleBar (30px high) - MUST BE ACTIVE AND DRAGGABLE
+    -- TitleBar (30px high)
     local TitleBar = Instance.new("Frame")
     TitleBar.Size = UDim2.new(1, 0, 0, 30)
+    TitleBar.Position = UDim2.new(0, 0, 0, 0) -- Absolute position at top
     TitleBar.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
     TitleBar.Parent = MainFrame
-    TitleBar.Active = true -- REQUIRED for mouse interaction
-    TitleBar.Draggable = true -- REQUIRED for moving the window
-    TitleBar.ZIndex = 2 -- Ensure buttons and title are clickable
-    
+    TitleBar.Active = true 
+    TitleBar.ZIndex = 2 
+    self:setupDrag(MainFrame, TitleBar) -- Use manual drag
+
     local Title = Instance.new("TextLabel")
     Title.Text = CONFIG.ScriptName
     Title.Size = UDim2.new(1, -60, 1, 0)
@@ -530,7 +540,7 @@ function MultiGrinder:setupGUI()
         button.Font = Enum.Font.Gotham
         button.TextSize = 14
         button.Parent = parent
-        button.ZIndex = 3 -- Higher ZIndex for buttons to ensure clicks register
+        button.ZIndex = 3 -- Ensure buttons are clickable
         return button
     end
     
@@ -547,9 +557,10 @@ function MultiGrinder:setupGUI()
     -- Tabs Container (30px high)
     local Tabs = Instance.new("Frame")
     Tabs.Size = UDim2.new(1, 0, 0, 30)
+    Tabs.Position = UDim2.new(0, 0, 0, 30) -- Absolute position below TitleBar (30px)
     Tabs.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
     Tabs.Parent = MainFrame
-    Tabs.ZIndex = 2 -- Ensures tabs are above content area
+    Tabs.ZIndex = 2 
 
     local TabLayout = Instance.new("UIListLayout")
     TabLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -565,7 +576,7 @@ function MultiGrinder:setupGUI()
             local page = Pages[tabName]
             if tabName == name then
                 button.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
-                if page and not self.IsMinimized then page.Visible = true end -- Only show if not minimized
+                if page and not self.IsMinimized then page.Visible = true end
             else
                 button.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
                 if page then page.Visible = false end
@@ -584,7 +595,8 @@ function MultiGrinder:setupGUI()
     
     -- Content Container (Fills the remaining space: 400 - 30 - 30 = 340px)
     local ContentContainer = Instance.new("Frame")
-    ContentContainer.Size = UDim2.new(1, 0, 0, 340) -- ABSOLUTE HEIGHT FIX
+    ContentContainer.Size = UDim2.new(1, 0, 0, 340) 
+    ContentContainer.Position = UDim2.new(0, 0, 0, 60) -- Absolute position below Tabs (60px)
     ContentContainer.BackgroundTransparency = 1
     ContentContainer.Parent = MainFrame
     ContentContainer.ZIndex = 1
@@ -593,7 +605,7 @@ function MultiGrinder:setupGUI()
     local function createContentPage(parent, name)
         local page = Instance.new("Frame")
         page.Name = name .. "Page"
-        page.Size = UDim2.new(1, 0, 1, 0) -- Fill ContentContainer completely
+        page.Size = UDim2.new(1, 0, 1, 0) -- Fill ContentContainer completely (340px high)
         page.BackgroundTransparency = 1
         page.Visible = false
         page.Parent = parent
@@ -917,6 +929,7 @@ function MultiGrinder:setupGUI()
         MainFrame = MainFrame,
         MinimizeButton = MinimizeButton,
         Tabs = Tabs,
+        ContentContainer = ContentContainer, -- Added reference
         Pages = Pages,
         GeneralPage = {
             ToggleButton = ToggleButton,
@@ -971,11 +984,10 @@ function MultiGrinder:start()
         print("[Multi-Bot Debug] WARNING: PlayerGui not found. Proceeding with StarterGui as parent for setupGUI.")
     end
 
-    -- Create and set up the GUI
     pcall(function()
         self:setupGUI()
-        self:resolveRemotes() -- Initial remote check
-        self:updateGUI() -- Initial UI state update
+        self:resolveRemotes() 
+        self:updateGUI() 
         self:log("Main loop starting...")
     end)
 
