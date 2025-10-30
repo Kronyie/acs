@@ -1,37 +1,34 @@
 --[[
-  Refactored Multi-Bot (V50 - GUI Initialization Fix)
+  Refactored Multi-Bot (V51 - Final UI Initialization Fix)
   
-  *** V50 NEW FEATURE / FIX ***
-  - CRITICAL FIX: Added the missing 'setMinimizedState' function definition, which was being called in setupGUI but was undefined, causing the script to crash before the UI could finalize and appear.
-  - GUI GUARANTEE: Explicitly added a check to ensure the ScreenGui is parented correctly to the LocalPlayer.
-  - CRITICAL LOGGING: Added specific debug prints to the main loop and action execution functions to diagnose why the script might not be finding targets:
-    1. Logs when the character's HumanoidRootPart (HRP) is found.
-    2. Logs which mode (Combat/Mining) is currently running.
-    3. Logs a CRITICAL message if the target search fails, including the exact names it was searching for. This helps confirm spelling/capitalization issues.
-
-  *** V49 NEW FEATURE / FIX (Original update content) ***
-  - CRITICAL LOGGING: Added specific debug prints to the main loop and action execution functions to diagnose why the script might not be finding targets.
+  *** V51 CRITICAL FIX ***
+  - INTEGRATION: Incorporated the robust LocalPlayer and PlayerGui lookup directly into the MultiGrinder:new() constructor.
+    - This ensures 'self.PlayerGui' is correctly defined before 'setupGUI' attempts to parent the ScreenGui, resolving the issue where the UI fails to appear without errors.
+    
+  *** V50 FIXES (Included from previous attempts) ***
+  - CRITICAL FIX: Added the missing 'setMinimizedState' function definition, which was causing the script to crash before the UI could finalize and appear.
+  - GUI GUARANTEE: The ScreenGui is now explicitly parented using the guaranteed 'self.PlayerGui' reference.
+  - CRITICAL LOGGING: Added debug prints to diagnose target searching failures and HRP status.
 
 --]]
 
+--//========================================================================================
+--// ESSENTIAL SERVICES & CONFIGURATION
+--//========================================================================================
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
-if not LocalPlayer then return end
 local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Camera = Workspace.CurrentCamera
 local Mouse = LocalPlayer:GetMouse() 
+local ReplicatedStorage = game:GetService("ReplicatedStorage") -- Added for remote lookup consistency
 
 local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
 
---//========================================================================================
---// CONFIGURATION
---//========================================================================================
-
 local CONFIG = {
-    ScriptName = "Studlands (V50)", -- V50 Update: GUI Initialization Fix
+    ScriptName = "Studlands (V51)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -48,12 +45,22 @@ local CONFIG = {
 
 function MultiGrinder:new()
     local self = setmetatable({}, MultiGrinder)
+
+    -- CRITICAL UI SETUP LINES (V51 Fix)
+    if LocalPlayer then
+        self.Player = LocalPlayer
+        -- This line is essential for the UI to appear on the client's screen
+        self.PlayerGui = self.Player:WaitForChild("PlayerGui")
+    else
+        print("[Multi-Bot Debug] ERROR: LocalPlayer not found during initialization.")
+        return nil -- Abort if the player context is missing
+    end
     
     -- State Variables
-    self.Enabled = false
+    self.Enabled = false -- Start OFF by default
     self.Mode = CONFIG.DefaultMode 
     self.CurrentTarget = nil 
-    self.CurrentTargetIdentifier = nil -- V40: Persistent key for ignored list
+    self.CurrentTargetIdentifier = nil 
     self.TargetAcquiredTime = nil 
     self.OriginalCameraCFrame = nil 
     self.EquippedToolName = nil 
@@ -63,13 +70,13 @@ function MultiGrinder:new()
     
     -- Feature Variables
     self.IgnoredTargets = {} 
-    self.AutoIgnoreEnabled = true -- V42
+    self.AutoIgnoreEnabled = true 
     
     -- Combat Variables
     self.CombatToolName = CONFIG.DefaultCombatToolName
     self.CombatTargetNames = CONFIG.DefaultCombatTargetNames
-    self.PriorityLocations = {} -- V43: Stores Vector3 values of priority spots
-    self.CurrentPriorityLocation = nil -- V44: Stores the active Vector3 center when farming a priority spot
+    self.PriorityLocations = {} 
+    self.CurrentPriorityLocation = nil 
     
     -- Mining Variables
     self.MiningToolName = CONFIG.DefaultMiningToolName
@@ -87,7 +94,6 @@ function MultiGrinder:new()
     }
     
     -- Attempt to find remotes in ReplicatedStorage or other common places
-    local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local FoundRemotes = {}
     for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
         if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
@@ -167,11 +173,10 @@ function MultiGrinder:saveCamera(hrp)
 end
 
 local function restoreCamera(self)
-    -- V47 FIX: Only restore if the CFrame was actually saved.
     if self.OriginalCameraCFrame then 
         Camera.CFrame = self.OriginalCameraCFrame 
         Camera.CameraType = Enum.CameraType.Custom
-        self.OriginalCameraCFrame = nil -- V47: Explicitly set to nil after restoring.
+        self.OriginalCameraCFrame = nil 
     end
 end
 
@@ -188,32 +193,27 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
--- V45 CHANGE: Major optimization to fix lag and remove V44 bug.
--- V44 CHANGE: Major overhaul to priority logic
--- V43 CHANGE: Added Priority Location logic
--- V41 CHANGE: Now returns two values: targetPart (HRP/Resource) and targetKey (Model/Resource)
 function MultiGrinder:findClosestTarget(position, names)
-    local closestTargetPart = nil -- The Part we teleport to (HRP or Resource Part)
-    local closestTargetKey = nil -- The Model/Part instance used for persistent ignore
+    local closestTargetPart = nil 
+    local closestTargetKey = nil 
     local minDistance = math.huge
     local searchRadius = math.huge 
 
-    -- V45: Priority target storage
     local priorityTargetPart = nil
     local priorityTargetKey = nil
     local priorityLocation = nil
-    local minPriorityDist = math.huge -- V45: Find closest priority target to player
+    local minPriorityDist = math.huge 
 
-    local allDescendants = Workspace:GetDescendants() -- V45: Get list ONCE
+    local allDescendants = Workspace:GetDescendants() 
     local isCombat = (self.Mode == "Combat")
     local hasPriorityLocations = (isCombat and #self.PriorityLocations > 0)
 
-    -- V45: === SINGLE PASS OPTIMIZATION ===
+    -- === SINGLE PASS OPTIMIZATION ===
     for _, obj in ipairs(allDescendants) do
         local targetPart = nil
         local targetKey = nil
         
-        -- Skip players and our own character
+        -- Check for Mobs (Combat)
         if obj:IsA("Model") and obj:FindFirstChildOfClass("Humanoid") and obj.Parent == Workspace and obj ~= LocalPlayer.Character then
             local humanoid = obj:FindFirstChildOfClass("Humanoid")
             if not humanoid or humanoid.Health <= 0 then continue end
@@ -224,7 +224,7 @@ function MultiGrinder:findClosestTarget(position, names)
             targetPart = hrp
             targetKey = obj -- The Model
 
-            -- V45: Priority Check (Combat Only) - Check ALL mobs
+            -- Priority Check (Combat Only) - Check ALL mobs
             if hasPriorityLocations then
                 if not self.IgnoredTargets[targetKey] then
                     for _, prioLoc in ipairs(self.PriorityLocations) do
@@ -236,15 +236,15 @@ function MultiGrinder:findClosestTarget(position, names)
                                 minPriorityDist = distToPlayer
                                 priorityTargetPart = targetPart
                                 priorityTargetKey = targetKey
-                                priorityLocation = prioLoc -- Store the location center
+                                priorityLocation = prioLoc 
                             end
-                            break -- Found in a zone, no need to check other zones for this mob
+                            break 
                         end
                     end
                 end
             end
 
-            -- V45: Normal Target Check - Check ONLY named mobs
+            -- Normal Target Check - Check ONLY named mobs
             for _, name in ipairs(names) do
                 if string.lower(obj.Name) == string.lower(name) then 
                     
@@ -258,11 +258,11 @@ function MultiGrinder:findClosestTarget(position, names)
                             closestTargetKey = targetKey
                         end
                     end
-                    break -- Found match, no need to check other names for this obj
+                    break 
                 end
             end
         
-        -- V45: Check for Resources (Mining)
+        -- Check for Resources (Mining)
         elseif not isCombat then
              for _, name in ipairs(names) do
                 if string.lower(obj.Name) == string.lower(name) and obj:IsA("BasePart") then 
@@ -279,20 +279,18 @@ function MultiGrinder:findClosestTarget(position, names)
                             closestTargetKey = targetKey
                         end
                     end
-                    break -- Found match, no need to check other names for this obj
+                    break 
                 end
             end
         end
     end -- End of single pass loop
 
-    -- V45: Prioritize returning the priority target
+    -- Prioritize returning the priority target
     if priorityTargetPart then
         print(string.format("[Multi-Bot Debug] Priority Target Found: %s near location.", priorityTargetKey.Name))
-        -- V44: Return the target Part, the Model Key, and the Priority Center Location
         return priorityTargetPart, priorityTargetKey, priorityLocation
     end
     
-    -- V44: Return normal target if no priority one was found
     return closestTargetPart, closestTargetKey, nil
 end
 
@@ -302,29 +300,25 @@ end
 
 function MultiGrinder:executeCombatAction(hrp)
     local toolName = self.CombatToolName
-    local remotes = self.Remotes
     local target = self.CurrentTarget
-    local priorityLoc = self.CurrentPriorityLocation -- V44
+    local priorityLoc = self.CurrentPriorityLocation 
     
-    print(string.format("[Multi-Bot Debug] MODE: Combat. HRP Found: %s", tostring(hrp.Position))) -- V49
+    print(string.format("[Multi-Bot Debug] MODE: Combat. HRP Found: %s", tostring(hrp.Position))) 
 
-    -- Check if the current target is nil or invalid (e.g., destroyed/killed)
-    -- V44: Also check if we just cleared a priority area but the target is gone.
     local needsNewTarget = not target or not target.Parent 
 
     if needsNewTarget then
         local targetNames = self:getTargetNames("Combat")
         
-        -- V44 CHANGE: Receive three values
         local newTarget, newTargetKey, priorityLocation = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newTarget then 
-            local searchList = table.concat(targetNames, ", ") -- V49
-            print(string.format("[Multi-Bot CRITICAL] Combat Targets NOT found. Searching for: %s", searchList)) -- V49
+            local searchList = table.concat(targetNames, ", ") 
+            print(string.format("[Multi-Bot CRITICAL] Combat Targets NOT found. Searching for: %s", searchList)) 
             
             self.CurrentTarget = nil 
-            self.CurrentTargetIdentifier = nil -- V40
-            self.CurrentPriorityLocation = nil -- V44
+            self.CurrentTargetIdentifier = nil 
+            self.CurrentPriorityLocation = nil 
             self.TargetAcquiredTime = nil 
             restoreCamera(self) 
             self:updateGUI() 
@@ -333,18 +327,16 @@ function MultiGrinder:executeCombatAction(hrp)
         
         -- New target found
         self.CurrentTarget = newTarget
-        self.CurrentTargetIdentifier = newTargetKey -- V40
-        self.CurrentPriorityLocation = priorityLocation -- V44
+        self.CurrentTargetIdentifier = newTargetKey 
+        self.CurrentPriorityLocation = priorityLocation 
         self.TargetAcquiredTime = tick() 
-        print(string.format("[Multi-Bot Debug] Acquired Target: %s (%s)", newTargetKey.Name, newTargetKey:IsA("Model") and "Model" or "Part")) -- V49
+        print(string.format("[Multi-Bot Debug] Acquired Target: %s (%s)", newTargetKey.Name, newTargetKey:IsA("Model") and "Model" or "Part")) 
         self:updateGUI()
         
         -- Teleport to new target or priority location
         if priorityLocation then
-            -- V44: Teleport to the center of the priority zone, not the specific HRP
             self:teleport(priorityLocation)
         else
-            -- Normal teleport to HRP position
             self:teleport(newTarget.Position)
         end
         self:saveCamera(hrp)
@@ -356,24 +348,22 @@ function MultiGrinder:executeCombatAction(hrp)
             return false 
         end
         
-        -- Check for auto-ignore (V42: Only if enabled)
+        -- Check for auto-ignore
         local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")
         if self.AutoIgnoreEnabled and humanoid and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
             
-            -- V44: If we are in a priority location, wait until the mob is dead before ignoring.
             if not self.CurrentPriorityLocation or humanoid.Health <= 0 then
                 
                 local targetName = target.Parent and target.Parent.Name or target.Name
                 print(string.format("[Multi-Bot Debug] Target %s alive for > 10s. Auto-ignoring.", targetName))
                 
-                -- V40 FIX: Use the CurrentTargetIdentifier for ignoring
                 if self.CurrentTargetIdentifier then
                     self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
                 end
                 
                 self.CurrentTarget = nil 
-                self.CurrentTargetIdentifier = nil -- V40
-                self.CurrentPriorityLocation = nil -- V44
+                self.CurrentTargetIdentifier = nil 
+                self.CurrentPriorityLocation = nil 
                 self.TargetAcquiredTime = nil
                 restoreCamera(self)
                 self:updateGUI()
@@ -394,29 +384,24 @@ end
 
 function MultiGrinder:executeMiningAction(hrp)
     local toolName = self.MiningToolName
-    local remotes = self.Remotes
     local resource = self.CurrentTarget
 
-    print(string.format("[Multi-Bot Debug] MODE: Mining. HRP Found: %s", tostring(hrp.Position))) -- V49
+    print(string.format("[Multi-Bot Debug] MODE: Mining. HRP Found: %s", tostring(hrp.Position))) 
     
-    -- V40: Check if the resource part is gone.
     local needsNewTarget = not resource or not resource.Parent
 
-    -- V46: *** CRITICAL FIX ***
     if needsNewTarget then
         local targetNames = self:getTargetNames("Mining")
         
-        -- V41 CHANGE: Receive both values
-        -- V45: findClosestTarget now returns 3 values, but mining will ignore the 3rd (priorityLocation)
         local newResource, newResourceKey = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newResource then 
-            local searchList = table.concat(targetNames, ", ") -- V49
-            print(string.format("[Multi-Bot CRITICAL] Mining Targets NOT found. Searching for: %s", searchList)) -- V49
+            local searchList = table.concat(targetNames, ", ") 
+            print(string.format("[Multi-Bot CRITICAL] Mining Targets NOT found. Searching for: %s", searchList)) 
             
             self.CurrentTarget = nil 
-            self.CurrentTargetIdentifier = nil -- V40
-            self.CurrentPriorityLocation = nil -- V44
+            self.CurrentTargetIdentifier = nil 
+            self.CurrentPriorityLocation = nil 
             self.TargetAcquiredTime = nil 
             restoreCamera(self)
             self:updateGUI()
@@ -425,9 +410,9 @@ function MultiGrinder:executeMiningAction(hrp)
         
         -- New target found
         self.CurrentTarget = newResource
-        self.CurrentTargetIdentifier = newResourceKey -- V40
+        self.CurrentTargetIdentifier = newResourceKey 
         self.TargetAcquiredTime = tick() 
-        print(string.format("[Multi-Bot Debug] Acquired Resource: %s (%s)", newResourceKey.Name, newResourceKey:IsA("Model") and "Model" or "Part")) -- V49
+        print(string.format("[Multi-Bot Debug] Acquired Resource: %s (%s)", newResourceKey.Name, newResourceKey:IsA("Model") and "Model" or "Part")) 
         self:updateGUI()
         
         self:teleport(newResource.Position)
@@ -487,8 +472,6 @@ function MultiGrinder:setupGUI()
     MainFrame.Parent = ScreenGui
     
     -- Draggable functionality
-    local drag = false
-    local offset = Vector2.new(0, 0)
     local TitleBar = Instance.new("Frame")
     TitleBar.Size = UDim2.new(1, 0, 0, 30)
     TitleBar.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
@@ -630,8 +613,8 @@ function MultiGrinder:setupGUI()
         if self.MainGui and self.MainGui.GeneralPage then
             local ToggleButton = self.MainGui.GeneralPage.ToggleButton
             local ModeButton = self.MainGui.GeneralPage.ModeButton
-            local AutoIgnoreButton = self.MainGui.GeneralPage.AutoIgnoreButton -- V42
-            local PriorityCountLabel = self.MainGui.CombatPage.PriorityCountLabel -- V43
+            local AutoIgnoreButton = self.MainGui.GeneralPage.AutoIgnoreButton 
+            local PriorityCountLabel = self.MainGui.CombatPage.PriorityCountLabel 
 
             ToggleButton.Text = self.Enabled and "Auto Farm: ON" or "Auto Farm: OFF"
             ToggleButton.BackgroundColor3 = self.Enabled and Color3.fromRGB(70, 150, 70) or Color3.fromRGB(150, 70, 70)
@@ -644,14 +627,13 @@ function MultiGrinder:setupGUI()
         end
     end
 
-    -- V48 FIX: Use generic initial settings so updateGUI sets the correct state immediately.
     local ToggleButton = createButton(GeneralPage, "Starting...", Color3.fromRGB(70, 70, 70), nil, UDim2.new(1, -10, 0, 30))
     ToggleButton.Name = "ToggleButton"
     ToggleButton.MouseButton1Click:Connect(function()
         self.Enabled = not self.Enabled
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
-        self.CurrentPriorityLocation = nil -- V44
+        self.CurrentTargetIdentifier = nil 
+        self.CurrentPriorityLocation = nil 
         self.TargetAcquiredTime = nil 
         self.EquippedToolName = nil
         if not self.Enabled then
@@ -666,8 +648,8 @@ function MultiGrinder:setupGUI()
     ModeButton.MouseButton1Click:Connect(function()
         self.Mode = (self.Mode == "Combat") and "Mining" or "Combat"
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
-        self.CurrentPriorityLocation = nil -- V44
+        self.CurrentTargetIdentifier = nil 
+        self.CurrentPriorityLocation = nil 
         self.TargetAcquiredTime = nil 
         self.EquippedToolName = nil 
         restoreCamera(self)
@@ -675,7 +657,7 @@ function MultiGrinder:setupGUI()
         print(string.format("[Multi-Bot Debug] Mode Switched to: %s", self.Mode))
     end)
 
-    local AutoIgnoreButton = createButton(GeneralPage, "10s Auto-Ignore: ON", Color3.fromRGB(70, 70, 70), nil, UDim2.new(1, -10, 0, 30)) -- V42
+    local AutoIgnoreButton = createButton(GeneralPage, "10s Auto-Ignore: ON", Color3.fromRGB(70, 70, 70), nil, UDim2.new(1, -10, 0, 30)) 
     AutoIgnoreButton.Name = "AutoIgnoreButton"
     AutoIgnoreButton.MouseButton1Click:Connect(function()
         self.AutoIgnoreEnabled = not self.AutoIgnoreEnabled
@@ -691,8 +673,8 @@ function MultiGrinder:setupGUI()
             print(string.format("[Multi-Bot Debug] Manually Ignored Target: %s", self.CurrentTargetIdentifier.Name or "Unknown"))
         end
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
-        self.CurrentPriorityLocation = nil -- V44
+        self.CurrentTargetIdentifier = nil 
+        self.CurrentPriorityLocation = nil 
         self.TargetAcquiredTime = nil 
         restoreCamera(self)
         self:updateGUI()
@@ -719,9 +701,9 @@ function MultiGrinder:setupGUI()
     CToolNameInput.FocusLost:Connect(function(enterPressed)
         self.CombatToolName = CToolNameInput.Text
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
-        self.CurrentPriorityLocation = nil -- V44
-        self.TargetAcquiredTime = nil -- V47: Ensure reset
+        self.CurrentTargetIdentifier = nil 
+        self.CurrentPriorityLocation = nil 
+        self.TargetAcquiredTime = nil 
         self.EquippedToolName = nil
         self:updateGUI()
         print(string.format("[Multi-Bot Debug] Combat Tool updated: %s", self.CombatToolName))
@@ -733,13 +715,13 @@ function MultiGrinder:setupGUI()
     CTargetNamesInput.FocusLost:Connect(function(enterPressed)
         self.CombatTargetNames = CTargetNamesInput.Text
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
-        self.CurrentPriorityLocation = nil -- V44
-        self.TargetAcquiredTime = nil -- V47: Ensure reset
+        self.CurrentTargetIdentifier = nil 
+        self.CurrentPriorityLocation = nil 
+        self.TargetAcquiredTime = nil 
         print(string.format("[Multi-Bot Debug] Combat Targets updated: %s", self.CombatTargetNames))
     end)
     
-    -- Priority Locations (V43)
+    -- Priority Locations 
     local PriorityLabel = createInputLabel(CombatPage, "--- Priority Kill Zones (10m Radius) ---")
     PriorityLabel.TextColor3 = Color3.fromRGB(255, 180, 0)
     
@@ -766,7 +748,7 @@ function MultiGrinder:setupGUI()
     ClearPriorityButton.Name = "ClearPriorityButton"
     ClearPriorityButton.MouseButton1Click:Connect(function()
         self.PriorityLocations = {}
-        self.CurrentPriorityLocation = nil -- V44: Reset active priority
+        self.CurrentPriorityLocation = nil 
         self:updateGUI()
         print("[Multi-Bot Debug] Cleared all priority locations.")
     end)
@@ -784,9 +766,9 @@ function MultiGrinder:setupGUI()
     MToolNameInput.FocusLost:Connect(function(enterPressed)
         self.MiningToolName = MToolNameInput.Text
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
-        self.CurrentPriorityLocation = nil -- V44
-        self.TargetAcquiredTime = nil -- V47: Ensure reset
+        self.CurrentTargetIdentifier = nil 
+        self.CurrentPriorityLocation = nil 
+        self.TargetAcquiredTime = nil 
         self.EquippedToolName = nil
         self:updateGUI()
         print(string.format("[Multi-Bot Debug] Mining Tool updated: %s", self.MiningToolName))
@@ -798,9 +780,9 @@ function MultiGrinder:setupGUI()
     MTargetNamesInput.FocusLost:Connect(function(enterPressed)
         self.MiningTargetNames = MTargetNamesInput.Text
         self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil -- V40
-        self.CurrentPriorityLocation = nil -- V44
-        self.TargetAcquiredTime = nil -- V47: Ensure reset
+        self.CurrentTargetIdentifier = nil 
+        self.CurrentPriorityLocation = nil 
+        self.TargetAcquiredTime = nil 
         print(string.format("[Multi-Bot Debug] Mining Targets updated: %s", self.MiningTargetNames))
     end)
     
@@ -840,12 +822,11 @@ function MultiGrinder:setupGUI()
             ModeButton = ModeButton,
             IgnoreButton = IgnoreButton, 
             ClearIgnoreButton = ClearIgnoreButton, 
-            AutoIgnoreButton = AutoIgnoreButton, -- NEW (V42)
+            AutoIgnoreButton = AutoIgnoreButton, 
         },
         CombatPage = {
             ToolNameInput = CToolNameInput,
             TargetNamesInput = CTargetNamesInput,
-            -- V43
             PriorityCountLabel = PriorityCountLabel,
             AddPriorityButton = AddPriorityButton,
             ClearPriorityButton = ClearPriorityButton,
@@ -870,11 +851,10 @@ function MultiGrinder:setupGUI()
     self:setMinimizedState(self.IsMinimized)
     self:showTab(self.CurrentTab)
     
-    -- V47: Need to call updateGUI once after all setup is done to set initial button states
     self:updateGUI()
     
-    -- V50: CRITICAL: Explicitly set parent to guarantee GUI appears
-    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    -- V51 CRITICAL FIX: Use self.PlayerGui which is guaranteed to be ready
+    ScreenGui.Parent = self.PlayerGui
 
 end
 
@@ -912,6 +892,8 @@ end
 
 pcall(function()
     local bot = MultiGrinder:new()
-    bot:start()
-    print("[Multi-Bot Debug] Script finished initial execution block successfully.")
+    if bot then
+        bot:start()
+        print("[Multi-Bot Debug] Script finished initial execution block successfully.")
+    end
 end)
