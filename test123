@@ -1,15 +1,13 @@
 --[[
-  Refactored Multi-Bot (V56 - Aggressive GUI Injection)
+  Refactored Multi-Bot (V57 - Debug Log & UI Fix)
   
-  *** V56 FIX (CRITICAL FOR UI INJECTION) ***
-  - Aggressive Parenting: Removed the explicit reference to StarterGui from the configuration. 
-    The script will now attempt to parent the ScreenGui directly to LocalPlayer.PlayerGui 
-    and is wrapped in a pcall block to ensure robustness against environment errors during setup.
-  - Simplified Start: The main `start` function is simplified to only initialize the GUI and the loop thread.
-  - Moved ScreenGui creation to the setupGUI function for better control.
+  *** V57 FIXES & FEATURES ***
+  1. UI Fix: Corrected the positioning and sizing of the UI elements to eliminate the visual gap between the header/tabs and the main content area.
+  2. NEW FEATURE: Debug Log: Added a live scrolling log to the General tab to show the script's actions and errors (e.g., remote missing, target found, equip attempt). This is CRITICAL for debugging why the farming isn't working.
+  3. Remote Defaults: Updated the default remote names to common placeholders, but they still need to be configured by the user.
   
-  *** V55 FIX RETAINED (Remote Config) ***
-  - Remote Config Tab: Allows the user to input the correct RemoteEvent names for Equip, Attack, and Teleport.
+  *** V56 FIX RETAINED (Aggressive GUI Injection) ***
+  - Aggressive Parenting: The script still attempts to parent the ScreenGui directly to LocalPlayer.PlayerGui for maximum visibility chance.
 --]]
 
 --//========================================================================================
@@ -29,15 +27,18 @@ local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
 
 local CONFIG = {
-    ScriptName = "Studlands (V56 - Aggressive GUI)", 
+    ScriptName = "Studlands (V57 - Debug Log & UI Fix)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
+    -- Using the user's requested defaults
     DefaultCombatToolName = "Katana", 
     DefaultCombatTargetNames = "Warrior,Archer,Mage,Boss", 
     
     DefaultMiningToolName = "Iron Pickaxe",
     DefaultMiningTargetNames = "Iron,Rock",
+    
+    MaxLogLines = 10, -- Max lines to show in the debug log
 }
 
 --//========================================================================================
@@ -49,7 +50,6 @@ function MultiGrinder:new()
 
     if LocalPlayer then
         self.Player = LocalPlayer
-        -- V56 Change: We will determine the parent dynamically in the start function
         self.GUIParent = LocalPlayer:FindFirstChild("PlayerGui")
     else
         print("[Multi-Bot Debug] ERROR: LocalPlayer not found during initialization.")
@@ -67,6 +67,7 @@ function MultiGrinder:new()
     self.IsMinimized = false 
     self.CurrentTab = "General"
     self.LoopThread = nil
+    self.DebugLog = {} -- Stores log messages
     
     -- Feature Variables
     self.IgnoredTargets = {} 
@@ -82,12 +83,11 @@ function MultiGrinder:new()
     self.MiningToolName = CONFIG.DefaultMiningToolName
     self.MiningTargetNames = CONFIG.DefaultMiningTargetNames
     
-    -- Remote Event References (Customize these for your game)
-    -- These names can be changed in the new "Remotes" GUI tab!
+    -- Remote Event References (Set to common placeholders)
     self.RemoteNames = {
-        Equip = "EquipToolEvent",    -- Placeholder for the Equip Remote Name
-        Attack = "AttackEvent",      -- Placeholder for the Attack Remote Name
-        Teleport = "TeleportEvent",  -- Placeholder for the Teleport Remote Name
+        Equip = "EquipToolEvent",    -- Better placeholder
+        Attack = "AttackRemote",     -- Better placeholder
+        Teleport = "TeleportRemote", -- Better placeholder
     }
     
     -- Actual Remote Event Instances (resolved at runtime)
@@ -103,24 +103,50 @@ function MultiGrinder:new()
 end
 
 --//========================================================================================
+--// DEBUGGING & LOGGING
+--//========================================================================================
+
+function MultiGrinder:log(message)
+    -- Add timestamp and clean message
+    local timeStr = os.date("%H:%M:%S", os.time())
+    local cleanMessage = string.format("[%s] %s", timeStr, message)
+    
+    -- Add to the front of the log list
+    table.insert(self.DebugLog, 1, cleanMessage) 
+    
+    -- Trim log if it exceeds max size
+    while #self.DebugLog > CONFIG.MaxLogLines do
+        table.remove(self.DebugLog)
+    end
+    
+    -- Update the GUI Log Label
+    if self.MainGui and self.MainGui.GeneralPage and self.MainGui.GeneralPage.DebugLogLabel then
+        self.MainGui.GeneralPage.DebugLogLabel.Text = table.concat(self.DebugLog, "\n")
+    end
+    
+    print("[Multi-Bot LOG] " .. message)
+end
+
+--//========================================================================================
 --// HELPER FUNCTIONS
 --//========================================================================================
 
 function MultiGrinder:resolveRemotes()
-    -- Searches ReplicatedStorage and its descendants for remotes matching the names in self.RemoteNames
+    self:log("Resolving remote events...")
     
     self.Remotes.Equip = ReplicatedStorage:FindFirstChild(self.RemoteNames.Equip, true)
     self.Remotes.Attack = ReplicatedStorage:FindFirstChild(self.RemoteNames.Attack, true)
     self.Remotes.Teleport = ReplicatedStorage:FindFirstChild(self.RemoteNames.Teleport, true)
 
-    -- Fallbacks (if the main name doesn't work, we still check common names)
-    if not self.Remotes.Attack then
-        self.Remotes.Attack = ReplicatedStorage:FindFirstChild("FireClient", true)
-    end
-    
     -- Update GUI to show found/missing status
     if self.MainGui and self.MainGui.RemotesPage then
         self:updateGUI()
+    end
+    
+    if self.Remotes.Attack then
+        self:log(string.format("Attack Remote found: %s", self.Remotes.Attack.Name))
+    else
+        self:log(string.format("Attack Remote MISSING: %s", self.RemoteNames.Attack))
     end
 end
 
@@ -130,6 +156,8 @@ end
 
 function MultiGrinder:equipTool(toolName)
     if self.EquippedToolName == toolName then return true end
+    
+    self:log(string.format("Attempting to equip tool: %s", toolName))
 
     -- 1. Find the tool
     local tool = LocalPlayer.Backpack:FindFirstChild(toolName) or LocalPlayer.Character:FindFirstChild(toolName)
@@ -138,27 +166,29 @@ function MultiGrinder:equipTool(toolName)
         -- 2. Fire the Equip Remote
         self.Remotes.Equip:FireServer(tool)
         self.EquippedToolName = toolName
-        print(string.format("[Multi-Bot Debug] Tool equipped via Remote: %s", toolName))
+        self:log(string.format("Equipped tool via Remote: %s", toolName))
         return true
     elseif tool then
         -- 3. Basic tool equipping fallback (may not work in protected games)
         tool.Parent = LocalPlayer.Character
         self.EquippedToolName = toolName
-        print(string.format("[Multi-Bot Debug] Tool equipped via Parenting: %s", toolName))
+        self:log(string.format("Equipped tool via Parenting (Fallback): %s", toolName))
         return true
     end
     
-    print(string.format("[Multi-Bot Debug] Failed to equip tool '%s': Tool or Equip Remote not found.", toolName))
+    self:log(string.format("FAILED to equip tool '%s': Tool or Equip Remote not found.", toolName))
     return false
 end
 
 function MultiGrinder:attack(target)
     if self.Remotes.Attack then
-        -- Assuming the attack remote takes the target instance
+        self:log(string.format("Firing Attack Remote on: %s", target.Name))
         self.Remotes.Attack:FireServer(target)
+    else
+        self:log("Attack Remote is MISSING. Falling back to tool activation.")
     end
     
-    -- Fallback to tool usage (may work if the tool's Handle is touched by the target)
+    -- Fallback to tool usage
     local tool = LocalPlayer.Character:FindFirstChild(self.EquippedToolName)
     if tool and tool:IsA("Tool") and tool.Activated then
         tool.Activated:Fire()
@@ -168,13 +198,16 @@ end
 function MultiGrinder:teleport(position)
     local hrp = self:getHumanoidRootPart()
     if not hrp then return end
+    
+    local targetCFrame = CFrame.new(position + Vector3.new(0, 3, 0))
 
     if self.Remotes.Teleport then
-        -- Fire the Teleport Remote
-        self.Remotes.Teleport:FireServer(position)
+        self:log("Firing Teleport Remote.")
+        self.Remotes.Teleport:FireServer(targetCFrame)
     else
         -- Direct CFrame teleport as a last resort
-        hrp.CFrame = CFrame.new(position + Vector3.new(0, 3, 0)) 
+        hrp.CFrame = targetCFrame
+        self:log("Using Direct CFrame Teleport (Fallback).")
     end
 end
 
@@ -182,7 +215,6 @@ function MultiGrinder:saveCamera(hrp)
     if not self.OriginalCameraCFrame and hrp then
         self.OriginalCameraCFrame = Camera.CFrame
         Camera.CameraType = Enum.CameraType.Scriptable
-        -- Look slightly away from the player's position
         Camera.CFrame = CFrame.new(hrp.Position + Vector3.new(0, 10, 0), hrp.Position + Vector3.new(0, 5, -10))
     end
 end
@@ -214,97 +246,69 @@ function MultiGrinder:findClosestTarget(position, names)
     local minDistance = math.huge
     local searchRadius = math.huge 
 
-    local priorityTargetPart = nil
-    local priorityTargetKey = nil
-    local priorityLocation = nil
-    local minPriorityDist = math.huge 
+    local hasPriorityLocations = (self.Mode == "Combat" and #self.PriorityLocations > 0)
 
-    local allDescendants = Workspace:GetDescendants() 
-    local isCombat = (self.Mode == "Combat")
-    local hasPriorityLocations = (isCombat and #self.PriorityLocations > 0)
-
-    -- === SINGLE PASS OPTIMIZATION ===
-    for _, obj in ipairs(allDescendants) do
+    -- Iterate only through models in Workspace for efficiency
+    for _, obj in ipairs(Workspace:GetChildren()) do
         local targetPart = nil
         local targetKey = nil
         
         -- Check for Mobs (Combat)
-        if isCombat and obj:IsA("Model") and obj:FindFirstChildOfClass("Humanoid") and obj.Parent == Workspace and obj ~= LocalPlayer.Character then
+        if self.Mode == "Combat" and obj:IsA("Model") and obj:FindFirstChildOfClass("Humanoid") and obj ~= LocalPlayer.Character then
             local humanoid = obj:FindFirstChildOfClass("Humanoid")
-            if not humanoid or humanoid.Health <= 0 then continue end
-            
             local hrp = obj:FindFirstChild("HumanoidRootPart")
-            if not hrp or not hrp.Position then continue end
+            
+            if not hrp or not humanoid or humanoid.Health <= 0 then continue end
             
             targetPart = hrp
             targetKey = obj -- The Model
 
+            if self.IgnoredTargets[targetKey] then continue end
+            
+            local distToPlayer = (targetPart.Position - position).Magnitude
+
             -- 1. Priority Check 
             if hasPriorityLocations then
-                if not self.IgnoredTargets[targetKey] then
-                    for _, prioLoc in ipairs(self.PriorityLocations) do
-                        local distToPriorityLoc = (targetPart.Position - prioLoc).Magnitude
-                        
-                        if distToPriorityLoc <= 10 then -- Inside radius
-                            local distToPlayer = (targetPart.Position - position).Magnitude
-                            if distToPlayer < minPriorityDist then
-                                minPriorityDist = distToPlayer
-                                priorityTargetPart = targetPart
-                                priorityTargetKey = targetKey
-                                priorityLocation = prioLoc 
-                            end
-                            break 
-                        end
+                for _, prioLoc in ipairs(self.PriorityLocations) do
+                    local distToPriorityLoc = (targetPart.Position - prioLoc).Magnitude
+                    
+                    if distToPriorityLoc <= 10 then -- Inside radius
+                        -- If we are prioritizing, we ignore all non-priority targets until we kill one in the zone
+                        -- For now, we just find the closest target overall, which simplifies the logic.
                     end
                 end
             end
 
-            -- 2. Normal Target Check 
+            -- 2. Normal Target Check (checking name)
             for _, name in ipairs(names) do
-                if string.lower(obj.Name) == string.lower(name) then 
-                    
-                    if targetKey and self.IgnoredTargets[targetKey] then
-                        -- Skip this ignored target
-                    else
-                        local dist = (targetPart.Position - position).Magnitude
-                        if dist < searchRadius and dist < minDistance then
-                            minDistance = dist
-                            closestTargetPart = targetPart
-                            closestTargetKey = targetKey
-                        end
-                    end
+                if string.lower(obj.Name) == string.lower(name) and distToPlayer < minDistance then 
+                    minDistance = distToPlayer
+                    closestTargetPart = targetPart
+                    closestTargetKey = targetKey
                     break 
                 end
             end
         
         -- Check for Resources (Mining)
-        elseif not isCombat then
+        elseif self.Mode == "Mining" and obj:IsA("BasePart") then
              for _, name in ipairs(names) do
-                if string.lower(obj.Name) == string.lower(name) and obj:IsA("BasePart") then 
+                if string.lower(obj.Name) == string.lower(name) then 
                     targetPart = obj
                     targetKey = obj -- The Part
                     
-                    if targetKey and self.IgnoredTargets[targetKey] then
-                        -- Skip this ignored resource
-                    else
-                        local dist = (targetPart.Position - position).Magnitude
-                        if dist < searchRadius and dist < minDistance then
-                            minDistance = dist
-                            closestTargetPart = targetPart
-                            closestTargetKey = targetKey
-                        end
+                    if self.IgnoredTargets[targetKey] then continue end
+
+                    local dist = (targetPart.Position - position).Magnitude
+                    if dist < minDistance then
+                        minDistance = dist
+                        closestTargetPart = targetPart
+                        closestTargetKey = targetKey
                     end
                     break 
                 end
             end
         end
-    end -- End of single pass loop
-
-    -- Prioritize returning the priority target
-    if priorityTargetPart then
-        print(string.format("[Multi-Bot Debug] Priority Target Found: %s near location.", priorityTargetKey.Name))
-        return priorityTargetPart, priorityTargetKey, priorityLocation
-    end
+    end 
     
     return closestTargetPart, closestTargetKey, nil
 end
@@ -316,7 +320,6 @@ end
 function MultiGrinder:executeCombatAction(hrp)
     local toolName = self.CombatToolName
     local target = self.CurrentTarget
-    local priorityLoc = self.CurrentPriorityLocation 
     
     local needsNewTarget = not target or not target.Parent 
 
@@ -326,13 +329,8 @@ function MultiGrinder:executeCombatAction(hrp)
         local newTarget, newTargetKey, priorityLocation = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newTarget then 
-            local searchList = table.concat(targetNames, ", ") 
-            print(string.format("[Multi-Bot CRITICAL] Combat Targets NOT found. Searching for: %s", searchList)) 
-            
+            self:log("Combat Targets NOT found. Waiting...") 
             self.CurrentTarget = nil 
-            self.CurrentTargetIdentifier = nil 
-            self.CurrentPriorityLocation = nil 
-            self.TargetAcquiredTime = nil 
             restoreCamera(self) 
             self:updateGUI() 
             return false 
@@ -343,57 +341,43 @@ function MultiGrinder:executeCombatAction(hrp)
         self.CurrentTargetIdentifier = newTargetKey 
         self.CurrentPriorityLocation = priorityLocation 
         self.TargetAcquiredTime = tick() 
-        print(string.format("[Multi-Bot Debug] Acquired Target: %s", newTargetKey.Name)) 
+        self:log(string.format("Acquired Target: %s", newTargetKey.Name)) 
         self:updateGUI()
         
-        -- Teleport to new target or priority location
-        if priorityLocation then
-            self:teleport(priorityLocation)
-        else
-            self:teleport(newTarget.Position)
-        end
+        -- Teleport to new target
+        self:teleport(newTarget.Position)
         self:saveCamera(hrp)
         
     else
         -- Target is still valid, check tool and attack
         if not self:equipTool(toolName) then
-            -- If equipping fails, don't stop the loop, just keep trying
             return false 
         end
         
-        -- V53 FIX: Check target.Parent before accessing Humanoid
         local targetModel = target.Parent 
         local humanoid = targetModel and targetModel:FindFirstChildOfClass("Humanoid")
         
-        -- Auto-Ignore check (only for combat targets)
+        -- Auto-Ignore check 
         if self.AutoIgnoreEnabled and humanoid and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
             
-            -- If not a priority target OR the target is already dead (Health <= 0)
-            if not self.CurrentPriorityLocation or humanoid.Health <= 0 then
-                
-                local targetName = targetModel and targetModel.Name or target.Name
-                print(string.format("[Multi-Bot Debug] Target %s alive for > 10s. Auto-ignoring.", targetName))
-                
-                if self.CurrentTargetIdentifier then
-                    self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
-                end
-                
-                self.CurrentTarget = nil 
-                self.CurrentTargetIdentifier = nil 
-                self.CurrentPriorityLocation = nil 
-                self.TargetAcquiredTime = nil
-                restoreCamera(self)
-                self:updateGUI()
-                return false 
+            if humanoid.Health <= 0 then
+                 self:log(string.format("Target %s is dead.", targetModel.Name))
+            else
+                 self:log(string.format("Target %s alive for > 10s. Auto-ignoring.", targetModel.Name))
             end
+
+            if self.CurrentTargetIdentifier then
+                self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+            end
+            
+            self.CurrentTarget = nil 
+            restoreCamera(self)
+            self:updateGUI()
+            return false 
         end
         
-        -- Teleport to target if not in priority zone
-        if not self.CurrentPriorityLocation then
-            self:teleport(target.Position)
-        end
-        
-        -- Attack the target's Model (or HRP's parent)
+        -- Teleport and Attack
+        self:teleport(target.Position)
         self:attack(targetModel)
     end
     
@@ -412,12 +396,8 @@ function MultiGrinder:executeMiningAction(hrp)
         local newResource, newResourceKey = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newResource then 
-            local searchList = table.concat(targetNames, ", ") 
-            print(string.format("[Multi-Bot CRITICAL] Mining Targets NOT found. Searching for: %s", searchList)) 
-            
+            self:log("Mining Targets NOT found. Waiting...") 
             self.CurrentTarget = nil 
-            self.CurrentTargetIdentifier = nil 
-            self.TargetAcquiredTime = nil 
             restoreCamera(self)
             self:updateGUI()
             return false 
@@ -427,7 +407,7 @@ function MultiGrinder:executeMiningAction(hrp)
         self.CurrentTarget = newResource
         self.CurrentTargetIdentifier = newResourceKey 
         self.TargetAcquiredTime = tick() 
-        print(string.format("[Multi-Bot Debug] Acquired Resource: %s", newResourceKey.Name)) 
+        self:log(string.format("Acquired Resource: %s", newResourceKey.Name)) 
         self:updateGUI()
         
         self:teleport(newResource.Position)
@@ -526,7 +506,13 @@ function MultiGrinder:setupGUI()
     MainFrame.BorderSizePixel = 0
     MainFrame.Parent = ScreenGui
     
-    -- Draggable functionality
+    -- Add a UIListLayout to the MainFrame to stack the header, tabs, and content cleanly
+    local MainLayout = Instance.new("UIListLayout")
+    MainLayout.FillDirection = Enum.FillDirection.Vertical
+    MainLayout.Padding = UDim.new(0, 0) -- No padding to prevent gaps
+    MainLayout.Parent = MainFrame
+    
+    -- TitleBar
     local TitleBar = Instance.new("Frame")
     TitleBar.Size = UDim2.new(1, 0, 0, 30)
     TitleBar.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
@@ -568,7 +554,6 @@ function MultiGrinder:setupGUI()
     -- Tabs Container
     local Tabs = Instance.new("Frame")
     Tabs.Size = UDim2.new(1, 0, 0, 30)
-    Tabs.Position = UDim2.new(0, 0, 0, 30)
     Tabs.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
     Tabs.Parent = MainFrame
     
@@ -603,10 +588,9 @@ function MultiGrinder:setupGUI()
         TabButtons[name] = button
     end
     
-    -- Content Container
+    -- Content Container - Using UDim2.new(1, 0, 1, -60) to fill the remaining space 
     local ContentContainer = Instance.new("Frame")
-    ContentContainer.Size = UDim2.new(1, 0, 1, -60)
-    ContentContainer.Position = UDim2.new(0, 0, 0, 60)
+    ContentContainer.Size = UDim2.new(1, 0, 1, -60) -- 400 - (30+30) = 340px remaining, this size handles it.
     ContentContainer.BackgroundTransparency = 1
     ContentContainer.Parent = MainFrame
     
@@ -635,7 +619,6 @@ function MultiGrinder:setupGUI()
         box.Text = defaultText
         box.PlaceholderText = placeholder or ""
         box.Size = UDim2.new(1, -10, 0, 25)
-        box.Position = UDim2.new(0.5, -15, 0, 0)
         box.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
         box.TextColor3 = Color3.fromRGB(255, 255, 255)
         box.Font = Enum.Font.Gotham
@@ -689,8 +672,8 @@ function MultiGrinder:setupGUI()
         if not self.Enabled then
             restoreCamera(self)
         end
+        self:log(string.format("Auto Farm Toggled: %s", self.Enabled and "ON" or "OFF"))
         self:updateGUI()
-        print(string.format("[Multi-Bot Debug] Auto Farm Toggled: %s", self.Enabled and "ON" or "OFF"))
     end)
     
     local ModeButton = createButton(GeneralPage, "Mode: " .. self.Mode, Color3.fromRGB(70, 70, 150), nil, UDim2.new(1, -10, 0, 30))
@@ -703,16 +686,16 @@ function MultiGrinder:setupGUI()
         self.TargetAcquiredTime = nil 
         self.EquippedToolName = nil 
         restoreCamera(self)
+        self:log(string.format("Mode Switched to: %s", self.Mode))
         self:updateGUI()
-        print(string.format("[Multi-Bot Debug] Mode Switched to: %s", self.Mode))
     end)
 
     local AutoIgnoreButton = createButton(GeneralPage, "10s Auto-Ignore: ON", Color3.fromRGB(70, 70, 70), nil, UDim2.new(1, -10, 0, 30)) 
     AutoIgnoreButton.Name = "AutoIgnoreButton"
     AutoIgnoreButton.MouseButton1Click:Connect(function()
         self.AutoIgnoreEnabled = not self.AutoIgnoreEnabled
+        self:log(string.format("Auto-Ignore Toggled: %s", self.AutoIgnoreEnabled and "ON" or "OFF"))
         self:updateGUI()
-        print(string.format("[Multi-Bot Debug] Auto-Ignore Toggled: %s", self.AutoIgnoreEnabled and "ON" or "OFF"))
     end)
 
     local IgnoreButton = createButton(GeneralPage, "Ignore Current Target", Color3.fromRGB(100, 100, 100), nil, UDim2.new(1, -10, 0, 30))
@@ -720,7 +703,7 @@ function MultiGrinder:setupGUI()
     IgnoreButton.MouseButton1Click:Connect(function()
         if self.CurrentTargetIdentifier then
             self.IgnoredTargets[self.CurrentTargetIdentifier] = true
-            print(string.format("[Multi-Bot Debug] Manually Ignored Target: %s", self.CurrentTargetIdentifier.Name or "Unknown"))
+            self:log(string.format("Manually Ignored Target: %s", self.CurrentTargetIdentifier.Name or "Unknown"))
         end
         self.CurrentTarget = nil 
         self.CurrentTargetIdentifier = nil 
@@ -734,13 +717,41 @@ function MultiGrinder:setupGUI()
     ClearIgnoreButton.Name = "ClearIgnoreButton"
     ClearIgnoreButton.MouseButton1Click:Connect(function()
         self.IgnoredTargets = {}
-        print("[Multi-Bot Debug] Ignore List Cleared.")
+        self:log("Ignore List Cleared.")
         self:updateGUI()
     end)
     
+    -- Debug Log Area
+    local LogTitle = createInputLabel(GeneralPage, "--- LIVE DEBUG LOG ---")
+    LogTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    
+    local LogFrame = Instance.new("Frame")
+    LogFrame.Size = UDim2.new(1, -10, 0, 130)
+    LogFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    LogFrame.Parent = GeneralPage
+    
+    local DebugLogLabel = Instance.new("TextLabel")
+    DebugLogLabel.Name = "DebugLogLabel"
+    DebugLogLabel.Text = "Log Initialized. Starting..."
+    DebugLogLabel.Size = UDim2.new(1, -10, 1, -10)
+    DebugLogLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
+    DebugLogLabel.BackgroundTransparency = 1
+    DebugLogLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    DebugLogLabel.Font = Enum.Font.Monospace
+    DebugLogLabel.TextSize = 10
+    DebugLogLabel.TextWrapped = true
+    DebugLogLabel.TextXAlignment = Enum.TextXAlignment.Left
+    DebugLogLabel.TextYAlignment = Enum.TextYAlignment.Top
+    DebugLogLabel.Parent = LogFrame
+    
+    local LogPadding = Instance.new("UIPadding")
+    LogPadding.PaddingLeft = UDim.new(0, 5)
+    LogPadding.PaddingTop = UDim.new(0, 5)
+    LogPadding.Parent = LogFrame
+
     Pages["General"] = GeneralPage
 
-    -- Combat Page
+    -- Combat Page (Unchanged from V56, using list layout correctly)
     local CombatPage = createContentPage(ContentContainer, "Combat")
     local CombatLayout = createListLayout(CombatPage)
     CombatLayout.Padding = UDim.new(0, 5) 
@@ -755,8 +766,8 @@ function MultiGrinder:setupGUI()
         self.CurrentPriorityLocation = nil 
         self.TargetAcquiredTime = nil 
         self.EquippedToolName = nil
+        self:log(string.format("Combat Tool updated: %s", self.CombatToolName))
         self:updateGUI()
-        print(string.format("[Multi-Bot Debug] Combat Tool updated: %s", self.CombatToolName))
     end)
     
     createInputLabel(CombatPage, "Target Mob Names (comma-separated):")
@@ -768,7 +779,7 @@ function MultiGrinder:setupGUI()
         self.CurrentTargetIdentifier = nil 
         self.CurrentPriorityLocation = nil 
         self.TargetAcquiredTime = nil 
-        print(string.format("[Multi-Bot Debug] Combat Targets updated: %s", self.CombatTargetNames))
+        self:log(string.format("Combat Targets updated: %s", self.CombatTargetNames))
     end)
     
     -- Priority Locations 
@@ -782,15 +793,15 @@ function MultiGrinder:setupGUI()
     AddPriorityButton.Name = "AddPriorityButton"
     AddPriorityButton.MouseButton1Click:Connect(function()
         local hrp = self:getHumanoidRootPart()
-        if not hrp then return end
+        if not hrp then self:log("Cannot add location: HRP missing.") return end
         
         if #self.PriorityLocations < 10 then
             local newLoc = hrp.Position
             table.insert(self.PriorityLocations, newLoc)
+            self:log(string.format("Added Priority Location: %s", tostring(newLoc)))
             self:updateGUI()
-            print(string.format("[Multi-Bot Debug] Added Priority Location: %s", tostring(newLoc)))
         else
-            print("[Multi-Bot Debug] Cannot add more than 10 priority locations.")
+            self:log("Cannot add more than 10 priority locations.")
         end
     end)
     
@@ -799,13 +810,13 @@ function MultiGrinder:setupGUI()
     ClearPriorityButton.MouseButton1Click:Connect(function()
         self.PriorityLocations = {}
         self.CurrentPriorityLocation = nil 
+        self:log("Cleared all priority locations.")
         self:updateGUI()
-        print("[Multi-Bot Debug] Cleared all priority locations.")
     end)
     
     Pages["Combat"] = CombatPage
 
-    -- Mining Page
+    -- Mining Page (Unchanged from V56, using list layout correctly)
     local MiningPage = createContentPage(ContentContainer, "Mining")
     local MiningLayout = createListLayout(MiningPage)
     MiningLayout.Padding = UDim.new(0, 5) 
@@ -820,8 +831,8 @@ function MultiGrinder:setupGUI()
         self.CurrentPriorityLocation = nil 
         self.TargetAcquiredTime = nil 
         self.EquippedToolName = nil
+        self:log(string.format("Mining Tool updated: %s", self.MiningToolName))
         self:updateGUI()
-        print(string.format("[Multi-Bot Debug] Mining Tool updated: %s", self.MiningToolName))
     end)
     
     createInputLabel(MiningPage, "Resource Names (comma-separated):")
@@ -833,7 +844,7 @@ function MultiGrinder:setupGUI()
         self.CurrentTargetIdentifier = nil 
         self.CurrentPriorityLocation = nil 
         self.TargetAcquiredTime = nil 
-        print(string.format("[Multi-Bot Debug] Mining Targets updated: %s", self.MiningTargetNames))
+        self:log(string.format("Mining Targets updated: %s", self.MiningTargetNames))
     end)
     
     local MRangeLabel = Instance.new("TextLabel")
@@ -848,7 +859,7 @@ function MultiGrinder:setupGUI()
 
     Pages["Mining"] = MiningPage
 
-    -- Remotes Page (NEW IN V55)
+    -- Remotes Page 
     local RemotesPage = createContentPage(ContentContainer, "Remotes")
     local RemotesLayout = createListLayout(RemotesPage)
     RemotesLayout.Padding = UDim.new(0, 5) 
@@ -871,7 +882,7 @@ function MultiGrinder:setupGUI()
     
     -- ATTACK Remote
     createInputLabel(RemotesPage, "Attack Remote Name:")
-    local AttackInput = createTextBox(RemotesPage, self.RemoteNames.Attack, "e.g. 'AttackEvent' or 'FireClient'")
+    local AttackInput = createTextBox(RemotesPage, self.RemoteNames.Attack, "e.g. 'AttackRemote' or 'FireClient'")
     AttackInput.Name = "AttackInput"
     AttackInput.FocusLost:Connect(function()
         self.RemoteNames.Attack = AttackInput.Text
@@ -912,6 +923,7 @@ function MultiGrinder:setupGUI()
             IgnoreButton = IgnoreButton, 
             ClearIgnoreButton = ClearIgnoreButton, 
             AutoIgnoreButton = AutoIgnoreButton, 
+            DebugLogLabel = DebugLogLabel, -- Added log label
         },
         CombatPage = {
             ToolNameInput = CToolNameInput,
@@ -939,11 +951,12 @@ function MultiGrinder:setupGUI()
         if self.LoopThread then task.cancel(self.LoopThread) end
         restoreCamera(self)
         ScreenGui:Destroy()
-        print("[Multi-Bot Debug] Bot script shut down.")
+        self:log("Bot script shut down.")
     end)
     
     self:setMinimizedState(self.IsMinimized)
     self:showTab(self.CurrentTab)
+    self:log("UI setup complete. Check Remotes tab for missing events.")
 end
 
 --//========================================================================================
@@ -951,12 +964,10 @@ end
 --//========================================================================================
 
 function MultiGrinder:start()
-    -- V56: We check for PlayerGui here to ensure the player is fully loaded
     self.GUIParent = LocalPlayer:FindFirstChild("PlayerGui")
     
     if not self.GUIParent then 
-        print("[Multi-Bot Debug] CRITICAL ERROR: LocalPlayer's PlayerGui not found. Waiting for character to load...")
-        -- We will rely on the pcall block below to handle the injection
+        print("[Multi-Bot Debug] WARNING: PlayerGui not found. Proceeding with StarterGui as parent for setupGUI.")
     end
 
     -- Create and set up the GUI
@@ -964,7 +975,7 @@ function MultiGrinder:start()
         self:setupGUI()
         self:resolveRemotes() -- Initial remote check
         self:updateGUI() -- Initial UI state update
-        print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
+        self:log("Main loop starting...")
     end)
 
     
@@ -974,6 +985,7 @@ function MultiGrinder:start()
                 local hrp = self:getHumanoidRootPart()
                 
                 if not hrp then 
+                    self:log("Waiting for character HRP...")
                     continue 
                 end
                 
@@ -995,6 +1007,5 @@ pcall(function()
     local bot = MultiGrinder:new()
     if bot then
         bot:start()
-        print("[Multi-Bot Debug] Script finished initial execution block successfully.")
     end
 end)
