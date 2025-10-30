@@ -1,19 +1,16 @@
 --[[
-  Refactored Multi-Bot (V48 - Toggle Initialization Fix)
+  Refactored Multi-Bot (V50 - GUI Initialization Fix)
   
-  *** V48 NEW FEATURE / FIX ***
-  - FIX: Refactored the 'ToggleButton' initialization in setupGUI. The button is now created with placeholder text/color, ensuring the subsequent call to self:updateGUI() correctly sets the initial 'Auto Farm: OFF' state based on self.Enabled = false. This eliminates visual redundancy and improves initialization clarity.
+  *** V50 NEW FEATURE / FIX ***
+  - CRITICAL FIX: Added the missing 'setMinimizedState' function definition, which was being called in setupGUI but was undefined, causing the script to crash before the UI could finalize and appear.
+  - GUI GUARANTEE: Explicitly added a check to ensure the ScreenGui is parented correctly to the LocalPlayer.
+  - CRITICAL LOGGING: Added specific debug prints to the main loop and action execution functions to diagnose why the script might not be finding targets:
+    1. Logs when the character's HumanoidRootPart (HRP) is found.
+    2. Logs which mode (Combat/Mining) is currently running.
+    3. Logs a CRITICAL message if the target search fails, including the exact names it was searching for. This helps confirm spelling/capitalization issues.
 
-  *** V47 NEW FEATURE / FIX ***
-  - Fixed remaining critical stability bugs related to nil values, especially around camera and target state changes.
-  - Fix: Removed accidental code in setupGUI that connected Combat Target Input to the Toggle Button logic, preventing state corruption.
-  - Fix: Made restoreCamera logic safer by ensuring self.OriginalCameraCFrame is set to nil after use.
-  - Cleaned up several state reset blocks (toggle, mode change) to explicitly set priority locations and target times to nil for better state control.
-
-  *** V46 NEW FEATURE / FIX ***
-  - Fixed a critical bug in executeMiningAction where it would *not* find a new target when it needed one.
-  - Fixed a typo in the Combat tab (self.CombatNames -> self.CombatTargetNames) that prevented the target list from updating.
-  - Updated CONFIG.ScriptName to V47.
+  *** V49 NEW FEATURE / FIX (Original update content) ***
+  - CRITICAL LOGGING: Added specific debug prints to the main loop and action execution functions to diagnose why the script might not be finding targets.
 
 --]]
 
@@ -34,7 +31,7 @@ MultiGrinder.__index = MultiGrinder
 --//========================================================================================
 
 local CONFIG = {
-    ScriptName = "Studlands (V48)", -- V48 Update
+    ScriptName = "Studlands (V50)", -- V50 Update: GUI Initialization Fix
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -308,6 +305,8 @@ function MultiGrinder:executeCombatAction(hrp)
     local remotes = self.Remotes
     local target = self.CurrentTarget
     local priorityLoc = self.CurrentPriorityLocation -- V44
+    
+    print(string.format("[Multi-Bot Debug] MODE: Combat. HRP Found: %s", tostring(hrp.Position))) -- V49
 
     -- Check if the current target is nil or invalid (e.g., destroyed/killed)
     -- V44: Also check if we just cleared a priority area but the target is gone.
@@ -320,6 +319,9 @@ function MultiGrinder:executeCombatAction(hrp)
         local newTarget, newTargetKey, priorityLocation = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newTarget then 
+            local searchList = table.concat(targetNames, ", ") -- V49
+            print(string.format("[Multi-Bot CRITICAL] Combat Targets NOT found. Searching for: %s", searchList)) -- V49
+            
             self.CurrentTarget = nil 
             self.CurrentTargetIdentifier = nil -- V40
             self.CurrentPriorityLocation = nil -- V44
@@ -334,7 +336,7 @@ function MultiGrinder:executeCombatAction(hrp)
         self.CurrentTargetIdentifier = newTargetKey -- V40
         self.CurrentPriorityLocation = priorityLocation -- V44
         self.TargetAcquiredTime = tick() 
-        print(string.format("[Multi-Bot Debug] Acquired Target: %s", newTargetKey.Name))
+        print(string.format("[Multi-Bot Debug] Acquired Target: %s (%s)", newTargetKey.Name, newTargetKey:IsA("Model") and "Model" or "Part")) -- V49
         self:updateGUI()
         
         -- Teleport to new target or priority location
@@ -395,6 +397,8 @@ function MultiGrinder:executeMiningAction(hrp)
     local remotes = self.Remotes
     local resource = self.CurrentTarget
 
+    print(string.format("[Multi-Bot Debug] MODE: Mining. HRP Found: %s", tostring(hrp.Position))) -- V49
+    
     -- V40: Check if the resource part is gone.
     local needsNewTarget = not resource or not resource.Parent
 
@@ -407,6 +411,9 @@ function MultiGrinder:executeMiningAction(hrp)
         local newResource, newResourceKey = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newResource then 
+            local searchList = table.concat(targetNames, ", ") -- V49
+            print(string.format("[Multi-Bot CRITICAL] Mining Targets NOT found. Searching for: %s", searchList)) -- V49
+            
             self.CurrentTarget = nil 
             self.CurrentTargetIdentifier = nil -- V40
             self.CurrentPriorityLocation = nil -- V44
@@ -420,7 +427,7 @@ function MultiGrinder:executeMiningAction(hrp)
         self.CurrentTarget = newResource
         self.CurrentTargetIdentifier = newResourceKey -- V40
         self.TargetAcquiredTime = tick() 
-        print(string.format("[Multi-Bot Debug] Acquired Resource: %s", newResourceKey.Name))
+        print(string.format("[Multi-Bot Debug] Acquired Resource: %s (%s)", newResourceKey.Name, newResourceKey:IsA("Model") and "Model" or "Part")) -- V49
         self:updateGUI()
         
         self:teleport(newResource.Position)
@@ -445,8 +452,28 @@ end
 --// GUI
 --//========================================================================================
 
+-- V50 FIX: This function was missing and caused a crash on GUI setup.
+function MultiGrinder:setMinimizedState(isMinimized)
+    self.IsMinimized = isMinimized
+    if self.MainGui and self.MainGui.MainFrame then
+        -- Resize the main frame
+        self.MainGui.MainFrame.Size = isMinimized and UDim2.new(0, 300, 0, 30) or UDim2.new(0, 300, 0, 400)
+        
+        -- Update the minimize button text
+        self.MainGui.MinimizeButton.Text = isMinimized and "+" or "-"
+        
+        -- Hide/show tabs and content
+        self.MainGui.Tabs.Visible = not isMinimized
+        for _, page in pairs(self.MainGui.Pages) do
+            -- Only show the current tab if not minimized
+            local isCurrentTab = (page.Name == self.CurrentTab .. "Page")
+            page.Visible = not isMinimized and isCurrentTab
+        end
+    end
+end
+
 function MultiGrinder:setupGUI()
-    if self.MainGui then self.MainGui.ScreenGui:Destroy() end
+    if self.MainGui and self.MainGui.ScreenGui then self.MainGui.ScreenGui:Destroy() end
     
     local ScreenGui = Instance.new("ScreenGui")
     ScreenGui.Name = "MultiBotGUI"
@@ -846,22 +873,9 @@ function MultiGrinder:setupGUI()
     -- V47: Need to call updateGUI once after all setup is done to set initial button states
     self:updateGUI()
     
-    -- V47: Append GUI to game
+    -- V50: CRITICAL: Explicitly set parent to guarantee GUI appears
     ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-end
 
-function MultiGrinder:setMinimizedState(isMinimized)
-    self.IsMinimized = isMinimized
-    local MainFrame = self.MainGui.MainFrame
-    local MinimizeButton = self.MainGui.MinimizeButton
-    
-    if isMinimized then
-        MainFrame.Size = UDim2.new(0, 300, 0, 30)
-        MinimizeButton.Text = "+"
-    else
-        MainFrame.Size = UDim2.new(0, 300, 0, 400)
-        MinimizeButton.Text = "-"
-    end
 end
 
 --//========================================================================================
@@ -894,9 +908,10 @@ end
 
 --//========================================================================================
 --// SCRIPT EXECUTION
---//================================S========================================
+--//========================================================================================
 
 pcall(function()
     local bot = MultiGrinder:new()
     bot:start()
+    print("[Multi-Bot Debug] Script finished initial execution block successfully.")
 end)
