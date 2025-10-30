@@ -1,14 +1,13 @@
 --[[
-  Refactored Multi-Bot (V58 - UI Content Fix & Name Clean)
+  Refactored Multi-Bot (V59 - CRITICAL UI FIXES)
   
-  *** V58 FIXES & FEATURES ***
-  1. UI Content Fix: Adjusted the ContentContainer size calculations to ensure the content pages (Combat, Mining, Remotes) correctly fill the available space and are visible when the UI is maximized.
-  2. Name Cleanup: Changed the script name from "Studlands (V57 - Debug Log & UI Fix)" to the requested "Studlands".
-  3. V57 Features Retained: Includes the crucial live debug log for troubleshooting farming issues.
+  *** V59 CRITICAL FIXES ***
+  1. Content Fix (Blank Tabs): The ContentContainer size was recalculated and set to an absolute height (0, 340) to guarantee the content pages (Combat, Mining, Remotes) are visible and correctly fill the remaining space when the UI is maximized.
+  2. Interactivity Fix: Explicitly set ZIndex = 2 on all clickable elements (tabs, buttons) and the TitleBar. This ensures buttons can be clicked and the frame can be dragged, resolving the immovable and unresponsive button issues.
   
-  *** TROUBLESHOOTING TIP (The farm is still not working) ***
-  - If the farm loop is still not working, look at the **LIVE DEBUG LOG** on the General tab.
-  - If the log says **Remote MISSING: [RemoteName]**, you MUST change the name in the **Remotes** tab to match the actual Remote Event used by the game.
+  *** V58 Features Retained ***
+  - Cleaned-up script name: "Studlands"
+  - Live debug log on the General tab for troubleshooting farming issues.
 --]]
 
 --//========================================================================================
@@ -98,8 +97,6 @@ function MultiGrinder:new()
         Attack = nil,
         Teleport = nil,
     }
-
-    self:resolveRemotes()
 
     return self
 end
@@ -299,7 +296,6 @@ function MultiGrinder:findClosestTarget(position, names)
         end
     end 
     
-    -- Note: PriorityLocation logic removed for simplicity as it was unused in execution.
     return closestTargetPart, closestTargetKey, nil 
 end
 
@@ -427,15 +423,15 @@ function MultiGrinder:setMinimizedState(isMinimized)
     self.IsMinimized = isMinimized
     local MainFrame = self.MainGui.MainFrame
 
-    -- Resize the main frame
+    -- Resize the main frame (400px tall when maximized)
     MainFrame.Size = isMinimized and UDim2.new(0, 300, 0, 30) or UDim2.new(0, 300, 0, 400)
     
     -- Update the minimize button text
-    self.MainGui.MinimizeButton.Text = isMinimized and "+" or "-"
+    self.MainGui.MinimizeButton.Text = isMinimized and "+" or "−" -- Use a cleaner minus symbol
     
     -- Hide/show tabs and content
     self.MainGui.Tabs.Visible = not isMinimized
-    -- Pages visibility is now handled by the showTab function, but we ensure they are hidden when minimized
+    -- Ensure content pages are only visible when maximized AND it's the current tab
     for _, page in pairs(self.MainGui.Pages) do
         local isCurrentTab = (page.Name == self.CurrentTab .. "Page")
         page.Visible = not isMinimized and isCurrentTab
@@ -492,7 +488,7 @@ function MultiGrinder:setupGUI()
     ScreenGui.Parent = self.GUIParent
 
     local MainFrame = Instance.new("Frame")
-    MainFrame.Size = UDim2.new(0, 300, 0, 400)
+    MainFrame.Size = UDim2.new(0, 300, 0, 400) -- Max size: 300x400
     MainFrame.Position = UDim2.new(0.5, -150, 0.5, -200)
     MainFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
     MainFrame.BorderSizePixel = 0
@@ -504,13 +500,14 @@ function MultiGrinder:setupGUI()
     MainLayout.Padding = UDim.new(0, 0) -- No padding to prevent gaps
     MainLayout.Parent = MainFrame
     
-    -- TitleBar (30px high)
+    -- TitleBar (30px high) - MUST BE ACTIVE AND DRAGGABLE
     local TitleBar = Instance.new("Frame")
     TitleBar.Size = UDim2.new(1, 0, 0, 30)
     TitleBar.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
     TitleBar.Parent = MainFrame
-    TitleBar.Active = true
-    TitleBar.Draggable = true 
+    TitleBar.Active = true -- REQUIRED for mouse interaction
+    TitleBar.Draggable = true -- REQUIRED for moving the window
+    TitleBar.ZIndex = 2 -- Ensure buttons and title are clickable
     
     local Title = Instance.new("TextLabel")
     Title.Text = CONFIG.ScriptName
@@ -521,6 +518,7 @@ function MultiGrinder:setupGUI()
     Title.Font = Enum.Font.GothamBold
     Title.TextSize = 16
     Title.Parent = TitleBar
+    Title.ZIndex = 2
     
     local function createButton(parent, text, color, position, size)
         local button = Instance.new("TextButton")
@@ -532,23 +530,27 @@ function MultiGrinder:setupGUI()
         button.Font = Enum.Font.Gotham
         button.TextSize = 14
         button.Parent = parent
+        button.ZIndex = 3 -- Higher ZIndex for buttons to ensure clicks register
         return button
     end
     
     -- Minimize/Maximize Button
-    local MinimizeButton = createButton(TitleBar, "-", Color3.fromRGB(90, 90, 90), UDim2.new(1, -60, 0, 0), UDim2.new(0, 30, 1, 0))
+    local MinimizeButton = createButton(TitleBar, "−", Color3.fromRGB(90, 90, 90), UDim2.new(1, -60, 0, 0), UDim2.new(0, 30, 1, 0))
     MinimizeButton.Name = "MinimizeButton"
+    MinimizeButton.ZIndex = 3
 
     -- Close Button
     local CloseButton = createButton(TitleBar, "X", Color3.fromRGB(150, 40, 40), UDim2.new(1, -30, 0, 0), UDim2.new(0, 30, 1, 0))
     CloseButton.Name = "CloseButton"
+    CloseButton.ZIndex = 3
 
     -- Tabs Container (30px high)
     local Tabs = Instance.new("Frame")
     Tabs.Size = UDim2.new(1, 0, 0, 30)
     Tabs.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
     Tabs.Parent = MainFrame
-    
+    Tabs.ZIndex = 2 -- Ensures tabs are above content area
+
     local TabLayout = Instance.new("UIListLayout")
     TabLayout.FillDirection = Enum.FillDirection.Horizontal
     TabLayout.Parent = Tabs
@@ -580,18 +582,18 @@ function MultiGrinder:setupGUI()
         TabButtons[name] = button
     end
     
-    -- Content Container (Fills the remaining space)
-    -- Total Height = 400. TitleBar=30, Tabs=30. Remaining content area = 340.
-    ContentContainer = Instance.new("Frame")
-    ContentContainer.Size = UDim2.new(1, 0, 1, -60) -- 100% of the remaining height after TitleBar (30) and Tabs (30)
+    -- Content Container (Fills the remaining space: 400 - 30 - 30 = 340px)
+    local ContentContainer = Instance.new("Frame")
+    ContentContainer.Size = UDim2.new(1, 0, 0, 340) -- ABSOLUTE HEIGHT FIX
     ContentContainer.BackgroundTransparency = 1
     ContentContainer.Parent = MainFrame
+    ContentContainer.ZIndex = 1
     
     -- Helper functions for creating content
     local function createContentPage(parent, name)
         local page = Instance.new("Frame")
         page.Name = name .. "Page"
-        page.Size = UDim2.new(1, 0, 1, 0)
+        page.Size = UDim2.new(1, 0, 1, 0) -- Fill ContentContainer completely
         page.BackgroundTransparency = 1
         page.Visible = false
         page.Parent = parent
@@ -618,6 +620,7 @@ function MultiGrinder:setupGUI()
         box.TextSize = 14
         box.ClearTextOnFocus = false
         box.Parent = parent
+        box.ZIndex = 2
         return box
     end
     
@@ -631,6 +634,7 @@ function MultiGrinder:setupGUI()
         label.TextSize = 12
         label.TextXAlignment = Enum.TextXAlignment.Left
         label.Parent = parent
+        label.ZIndex = 2
         return label
     end
     
@@ -644,6 +648,7 @@ function MultiGrinder:setupGUI()
         label.TextSize = 12
         label.TextXAlignment = Enum.TextXAlignment.Left
         label.Parent = parent
+        label.ZIndex = 2
         return label
     end
 
@@ -722,6 +727,7 @@ function MultiGrinder:setupGUI()
     LogFrame.Size = UDim2.new(1, -10, 0, 130)
     LogFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
     LogFrame.Parent = GeneralPage
+    LogFrame.ZIndex = 2
     
     local DebugLogLabel = Instance.new("TextLabel")
     DebugLogLabel.Name = "DebugLogLabel"
@@ -736,6 +742,7 @@ function MultiGrinder:setupGUI()
     DebugLogLabel.TextXAlignment = Enum.TextXAlignment.Left
     DebugLogLabel.TextYAlignment = Enum.TextYAlignment.Top
     DebugLogLabel.Parent = LogFrame
+    DebugLogLabel.ZIndex = 2
     
     local LogPadding = Instance.new("UIPadding")
     LogPadding.PaddingLeft = UDim.new(0, 5)
@@ -849,6 +856,7 @@ function MultiGrinder:setupGUI()
     MRangeLabel.TextSize = 12
     MRangeLabel.TextXAlignment = Enum.TextXAlignment.Center
     MRangeLabel.Parent = MiningPage
+    MRangeLabel.ZIndex = 2
 
     Pages["Mining"] = MiningPage
 
