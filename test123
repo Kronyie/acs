@@ -1,6 +1,12 @@
 --[[
-  Refactored Multi-Bot (V43 - Priority Locations)
+  Refactored Multi-Bot (V44 - Priority Location Overhaul)
   
+  *** V44 NEW FEATURE ***
+  - Changed priority location logic based on user feedback.
+  - The bot will now attack *ANY* mob (any Humanoid) within the 10-unit radius of a priority location, ignoring the target names list.
+  - When a priority target is found, the bot will teleport to the *center* of the priority location, not directly to the mob.
+  - Once all priority locations are clear of mobs, it will resume normal farming based on the target names list.
+
   *** V43 NEW FEATURE ***
   - Added Priority Location system to the Combat tab.
   - You can now add up to 10 priority locations.
@@ -141,6 +147,7 @@ function MultiGrinder:new()
         
         -- V43: Priority Locations
         PriorityLocations = {}, 
+        CurrentPriorityLocation = nil, -- V44: Store the location we are currently farming
         
         -- Persistent GUI State
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
@@ -158,6 +165,7 @@ function MultiGrinder:new()
         self.EquippedToolName = nil 
         self.CurrentTarget = nil
         self.CurrentTargetIdentifier = nil -- V40 NEW: Reset identifier
+        self.CurrentPriorityLocation = nil -- V44
         self.TargetAcquiredTime = nil 
         print("[Multi-Bot Debug] Character respawned. EquippedToolName reset to force re-equip.")
         
@@ -196,6 +204,7 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
+-- V44 CHANGE: Major overhaul to priority logic
 -- V43 CHANGE: Added Priority Location logic
 -- V41 CHANGE: Now returns two values: targetPart (HRP/Resource) and targetKey (Model/Resource)
 function MultiGrinder:findClosestTarget(position, names)
@@ -204,35 +213,34 @@ function MultiGrinder:findClosestTarget(position, names)
     local minDistance = math.huge
     local searchRadius = math.huge 
 
-    -- V43: === PRIORITY LOCATION CHECK (Combat Mode Only) ===
+    -- V44: === PRIORITY LOCATION CHECK (Combat Mode Only) ===
     if self.Mode == "Combat" and #self.PriorityLocations > 0 then
-        -- Iterate through all descendants once and check them against all priority locations.
-        for _, obj in ipairs(Workspace:GetDescendants()) do
-            local isTargetName = false
-            for _, name in ipairs(names) do
-                if string.lower(obj.Name) == string.lower(name) then
-                    isTargetName = true
-                    break
+        for _, priorityLoc in ipairs(self.PriorityLocations) do
+            -- Scan for ANY mob near this location
+            for _, obj in ipairs(Workspace:GetDescendants()) do
+                if obj:FindFirstChildOfClass("Humanoid") and obj:FindFirstChild("HumanoidRootPart") then
+                    local targetPart = obj:FindFirstChild("HumanoidRootPart")
+                    local targetKey = obj -- The Model
+                    
+                    -- Check if valid, not player, and not ignored
+                    if targetPart.Position and targetKey ~= LocalPlayer.Character and not self.IgnoredTargets[targetKey] then
+                        
+                        local distToPriorityLoc = (targetPart.Position - priorityLoc).Magnitude
+                        
+                        if distToPriorityLoc <= 10 then -- User-specified radius
+                            -- FOUND A PRIORITY TARGET!
+                            print(string.format("[Multi-Bot Debug] Priority Target Found: %s near location.", targetKey.Name))
+                            return targetPart, targetKey, priorityLoc -- Return mob HRP, mob Model, and the location
+                        end
+                    end
                 end
             end
+        end
+        -- No mobs found in any priority zone.
+    end
+    -- === END OF PRIORITY CHECK ===
 
-            if isTargetName then
-                -- This object is a potential target, let's get its parts
-                local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
-                local targetKey = nil
-                
-                if targetPart and targetPart.Parent:FindFirstChildOfClass("Humanoid") then
-                    targetKey = targetPart.Parent 
-                elseif targetPart and targetPart:IsA("BasePart") then
-                    targetKey = targetPart
-                end
-
-                -- Check if valid and not ignored
-                if targetPart and targetPart.Position and targetKey and targetPart.Parent ~= LocalPlayer.Character and not self.IgnoredTargets[targetKey] then
-                    
-                    -- Now, check if this valid target is near any priority location
-                    for _, priorityLoc in ipairs(self.PriorityLocations) do
-                        local distToPriorityLoc = (targetPart.Position - priorityLoc).Magnitude
+    -- Original "find closest" logic (uses 'names' list)
                         
                         if distToPriorityLoc <= 10 then -- User-specified radius
                             -- FOUND A PRIORITY TARGET!
@@ -279,7 +287,7 @@ function MultiGrinder:findClosestTarget(position, names)
         end
     end
     
-    return closestTargetPart, closestTargetKey
+    return closestTargetPart, closestTargetKey, nil -- V44: Return nil for priority location
 end
 
 -- =========================================================================
@@ -322,12 +330,13 @@ function MultiGrinder:executeCombatAction(hrp)
     if needsNewTarget then
         local targetNames = self:getTargetNames("Combat")
         
-        -- V41 CHANGE: Receive both values
-        local newTarget, newTargetKey = self:findClosestTarget(hrp.Position, targetNames)
+        -- V44 CHANGE: Receive three values
+        local newTarget, newTargetKey, priorityLocation = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newTarget then 
             self.CurrentTarget = nil 
             self.CurrentTargetIdentifier = nil -- V40
+            self.CurrentPriorityLocation = nil -- V44
             self.TargetAcquiredTime = nil 
             restoreCamera(self) 
             self:updateGUI() 
@@ -336,6 +345,7 @@ function MultiGrinder:executeCombatAction(hrp)
         
         self.CurrentTarget = newTarget
         self.CurrentTargetIdentifier = newTargetKey -- V41: Store the Model/Key
+        self.CurrentPriorityLocation = priorityLocation -- V44: Store the priority location (or nil)
         target = self.CurrentTarget
         self.TargetAcquiredTime = os.clock() 
         self:updateGUI() 
@@ -358,6 +368,7 @@ function MultiGrinder:executeCombatAction(hrp)
             
             self.CurrentTarget = nil 
             self.CurrentTargetIdentifier = nil -- V40
+            self.CurrentPriorityLocation = nil -- V44
             self.TargetAcquiredTime = nil
             restoreCamera(self)
             self:updateGUI()
@@ -389,7 +400,16 @@ function MultiGrinder:executeCombatAction(hrp)
     end
     
     local offset = CONFIG.Combat.TeleportOffset
-    local targetPos = target.Position + offset
+    local targetPos
+    
+    -- V44: Teleport to priority location center OR mob position
+    if self.CurrentPriorityLocation then
+        print("[Multi-Bot Debug] Teleporting to priority location center.")
+        targetPos = self.CurrentPriorityLocation + offset
+    else
+        targetPos = target.Position + offset
+    end
+    
     hrp.CFrame = CFrame.new(targetPos)
     
     if Camera and target and target.Position then 
@@ -417,7 +437,7 @@ function MultiGrinder:executeMiningAction(hrp)
     -- V40: Check if the resource part is gone.
     local needsNewTarget = not resource or not resource.Parent
 
-    if needsNewTarget then
+    if not needsNewTarget then
         local targetNames = self:getTargetNames("Mining")
         
         -- V41 CHANGE: Receive both values
@@ -801,6 +821,7 @@ function MultiGrinder:setupGUI()
         self.Enabled = not self.Enabled
         self.CurrentTarget = nil 
         self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentPriorityLocation = nil -- V44
         self.EquippedToolName = nil
         self.TargetAcquiredTime = nil 
         if not self.Enabled then
@@ -821,6 +842,7 @@ function MultiGrinder:setupGUI()
         self.Mode = (self.Mode == "Combat" and "Mining" or "Combat")
         self.CurrentTarget = nil 
         self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentPriorityLocation = nil -- V44
         self.EquippedToolName = nil
         self.TargetAcquiredTime = nil 
         restoreCamera(self)
@@ -843,6 +865,7 @@ function MultiGrinder:setupGUI()
             
             self.CurrentTarget = nil -- Force a new target search immediately
             self.CurrentTargetIdentifier = nil -- V40
+            self.CurrentPriorityLocation = nil -- V44
             self.TargetAcquiredTime = nil 
             restoreCamera(self)
             self:updateGUI()
@@ -862,6 +885,7 @@ function MultiGrinder:setupGUI()
         if self.CurrentTargetIdentifier and self.IgnoredTargets[self.CurrentTargetIdentifier] then
             self.CurrentTarget = nil
             self.CurrentTargetIdentifier = nil
+            self.CurrentPriorityLocation = nil -- V44
             restoreCamera(self)
         end
         self:updateGUI()
@@ -889,6 +913,7 @@ function MultiGrinder:setupGUI()
         self.CombatToolName = CToolNameInput.Text
         self.CurrentTarget = nil 
         self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentPriorityLocation = nil -- V44
         self.EquippedToolName = nil
         self:updateGUI() 
         print(string.format("[Multi-Bot Debug] Combat Tool updated: %s", self.CombatToolName))
@@ -898,9 +923,10 @@ function MultiGrinder:setupGUI()
     local CTargetNamesInput = createTextBox(CombatPage, self.CombatTargetNames, "E.g., Cavey, Bonezos")
     CTargetNamesInput.Name = "CTargetNamesInput"
     CTargetNamesInput.FocusLost:Connect(function(enterPressed)
-        self.CombatTargetNames = CTargetNamesInput.Text
+        self.CombatNames = CTargetNamesInput.Text
         self.CurrentTarget = nil 
         self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentPriorityLocation = nil -- V44
         print(string.format("[Multi-Bot Debug] Combat Targets updated: %s", self.CombatTargetNames))
     end)
     
@@ -970,6 +996,7 @@ function MultiGrinder:setupGUI()
         self.MiningToolName = MToolNameInput.Text
         self.CurrentTarget = nil 
         self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentPriorityLocation = nil -- V44
         self.EquippedToolName = nil
         self:updateGUI()
         print(string.format("[Multi-Bot Debug] Mining Tool updated: %s", self.MiningToolName))
@@ -982,6 +1009,7 @@ function MultiGrinder:setupGUI()
         self.MiningTargetNames = MTargetNamesInput.Text
         self.CurrentTarget = nil 
         self.CurrentTargetIdentifier = nil -- V40
+        self.CurrentPriorityLocation = nil -- V44
         print(string.format("[Multi-Bot Debug] Mining Targets updated: %s", self.MiningTargetNames))
     end)
     
@@ -1086,3 +1114,4 @@ pcall(function()
     local bot = MultiGrinder:new()
     bot:start()
 end)
+
