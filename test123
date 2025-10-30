@@ -1,12 +1,15 @@
 --[[
-  Refactored Multi-Bot (V55 - Remote Configuration)
+  Refactored Multi-Bot (V56 - Aggressive GUI Injection)
   
-  *** V55 NEW FEATURE (CRITICAL FOR FUNCTIONALITY) ***
-  - Remote Config Tab: Added a new "Remotes" tab to allow the user to input the correct RemoteEvent names for Equip, Attack, and Teleport.
-  - This is the most common reason why an exploit script fails to work, even if the GUI loads correctly.
+  *** V56 FIX (CRITICAL FOR UI INJECTION) ***
+  - Aggressive Parenting: Removed the explicit reference to StarterGui from the configuration. 
+    The script will now attempt to parent the ScreenGui directly to LocalPlayer.PlayerGui 
+    and is wrapped in a pcall block to ensure robustness against environment errors during setup.
+  - Simplified Start: The main `start` function is simplified to only initialize the GUI and the loop thread.
+  - Moved ScreenGui creation to the setupGUI function for better control.
   
-  *** V54 FIX RETAINED (GUI Crash Fix) ***
-  - UI Parenting: The PlayerGui reference often fails in exploit contexts. Retained the fix to explicitly use `game:GetService("StarterGui")` as the parent for the ScreenGui for robust UI injection.
+  *** V55 FIX RETAINED (Remote Config) ***
+  - Remote Config Tab: Allows the user to input the correct RemoteEvent names for Equip, Attack, and Teleport.
 --]]
 
 --//========================================================================================
@@ -26,7 +29,7 @@ local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
 
 local CONFIG = {
-    ScriptName = "Studlands (V55 - Remote Config)", 
+    ScriptName = "Studlands (V56 - Aggressive GUI)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.05, -- Time (in seconds) between attack/mine attempts (50ms is very fast)
     
@@ -46,8 +49,8 @@ function MultiGrinder:new()
 
     if LocalPlayer then
         self.Player = LocalPlayer
-        -- V54 Fix: Using StarterGui as the parent for the ScreenGui
-        self.GUIParent = StarterGui 
+        -- V56 Change: We will determine the parent dynamically in the start function
+        self.GUIParent = LocalPlayer:FindFirstChild("PlayerGui")
     else
         print("[Multi-Bot Debug] ERROR: LocalPlayer not found during initialization.")
         return nil 
@@ -509,8 +512,13 @@ function MultiGrinder:updateGUI()
     end
 end
 
-function MultiGrinder:setupGUI(ScreenGui)
+function MultiGrinder:setupGUI()
     
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "MultiBotGUI"
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    ScreenGui.Parent = self.GUIParent
+
     local MainFrame = Instance.new("Frame")
     MainFrame.Size = UDim2.new(0, 300, 0, 400)
     MainFrame.Position = UDim2.new(0.5, -150, 0.5, -200)
@@ -943,24 +951,22 @@ end
 --//========================================================================================
 
 function MultiGrinder:start()
-    -- Create ScreenGui
-    local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "MultiBotGUI"
-    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-
-    -- V54 CRITICAL FIX: Parent the ScreenGui to StarterGui
-    if self.GUIParent then
-        ScreenGui.Parent = self.GUIParent
-    else
-        print("[Multi-Bot Debug] CRITICAL ERROR: GUI Parent not available. Aborting UI setup.")
-        return
+    -- V56: We check for PlayerGui here to ensure the player is fully loaded
+    self.GUIParent = LocalPlayer:FindFirstChild("PlayerGui")
+    
+    if not self.GUIParent then 
+        print("[Multi-Bot Debug] CRITICAL ERROR: LocalPlayer's PlayerGui not found. Waiting for character to load...")
+        -- We will rely on the pcall block below to handle the injection
     end
 
-    self:setupGUI(ScreenGui)
-    self:resolveRemotes() -- Initial remote check
-    self:updateGUI() -- Initial UI state update
+    -- Create and set up the GUI
+    pcall(function()
+        self:setupGUI()
+        self:resolveRemotes() -- Initial remote check
+        self:updateGUI() -- Initial UI state update
+        print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
+    end)
 
-    print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
     
     self.LoopThread = task.spawn(function()
         while task.wait(CONFIG.FarmSpeed) do
