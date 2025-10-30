@@ -1,5 +1,12 @@
 --[[
-  Refactored Multi-Bot (V44 - Priority Location Overhaul)
+  Refactored Multi-Bot (V45 - Lag Fix & Bug Fix)
+  
+  *** V45 NEW FEATURE / FIX ***
+  - Optimized findClosestTarget() to fix lag.
+  - The function now calls Workspace:GetDescendants() only ONCE, instead of 10+ times.
+  - It iterates this single list and finds the closest priority target OR the closest normal target in one pass.
+  - This should dramatically reduce lag when the bot is on and searching for targets.
+  - ALSO: Fixed a critical bug from V44 where leftover code was present, causing errors.
   
   *** V44 NEW FEATURE ***
   - Changed priority location logic based on user feedback.
@@ -204,6 +211,7 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
+-- V45 CHANGE: Major optimization to fix lag and remove V44 bug.
 -- V44 CHANGE: Major overhaul to priority logic
 -- V43 CHANGE: Added Priority Location logic
 -- V41 CHANGE: Now returns two values: targetPart (HRP/Resource) and targetKey (Model/Resource)
@@ -213,56 +221,52 @@ function MultiGrinder:findClosestTarget(position, names)
     local minDistance = math.huge
     local searchRadius = math.huge 
 
-    -- V44: === PRIORITY LOCATION CHECK (Combat Mode Only) ===
-    if self.Mode == "Combat" and #self.PriorityLocations > 0 then
-        for _, priorityLoc in ipairs(self.PriorityLocations) do
-            -- Scan for ANY mob near this location
-            for _, obj in ipairs(Workspace:GetDescendants()) do
-                if obj:FindFirstChildOfClass("Humanoid") and obj:FindFirstChild("HumanoidRootPart") then
-                    local targetPart = obj:FindFirstChild("HumanoidRootPart")
-                    local targetKey = obj -- The Model
-                    
-                    -- Check if valid, not player, and not ignored
-                    if targetPart.Position and targetKey ~= LocalPlayer.Character and not self.IgnoredTargets[targetKey] then
+    -- V45: Priority target storage
+    local priorityTargetPart = nil
+    local priorityTargetKey = nil
+    local priorityLocation = nil
+    local minPriorityDist = math.huge -- V45: Find closest priority target to player
+
+    local allDescendants = Workspace:GetDescendants() -- V45: Get list ONCE
+    local isCombat = (self.Mode == "Combat")
+    local hasPriorityLocations = (isCombat and #self.PriorityLocations > 0)
+
+    -- V45: === SINGLE PASS OPTIMIZATION ===
+    for _, obj in ipairs(allDescendants) do
+        local targetPart = nil
+        local targetKey = nil
+
+        -- V45: Priority Check (Combat Only)
+        if hasPriorityLocations then
+            if obj:FindFirstChildOfClass("Humanoid") and obj:FindFirstChild("HumanoidRootPart") then
+                local tempPart = obj:FindFirstChild("HumanoidRootPart")
+                local tempKey = obj -- The Model
+                
+                -- Check if valid, not player, and not ignored
+                if tempPart.Position and tempKey ~= LocalPlayer.Character and not self.IgnoredTargets[tempKey] then
+                    for _, prioLoc in ipairs(self.PriorityLocations) do
+                        local distToPriorityLoc = (tempPart.Position - prioLoc).Magnitude
                         
-                        local distToPriorityLoc = (targetPart.Position - priorityLoc).Magnitude
-                        
-                        if distToPriorityLoc <= 10 then -- User-specified radius
-                            -- FOUND A PRIORITY TARGET!
-                            print(string.format("[Multi-Bot Debug] Priority Target Found: %s near location.", targetKey.Name))
-                            return targetPart, targetKey, priorityLoc -- Return mob HRP, mob Model, and the location
+                        if distToPriorityLoc <= 10 then -- Inside radius
+                            local distToPlayer = (tempPart.Position - position).Magnitude
+                            if distToPlayer < minPriorityDist then
+                                minPriorityDist = distToPlayer
+                                priorityTargetPart = tempPart
+                                priorityTargetKey = tempKey
+                                priorityLocation = prioLoc -- Store the location center
+                            end
+                            break -- Found in a zone, no need to check other zones for this mob
                         end
                     end
                 end
             end
         end
-        -- No mobs found in any priority zone.
-    end
-    -- === END OF PRIORITY CHECK ===
 
-    -- Original "find closest" logic (uses 'names' list)
-                        
-                        if distToPriorityLoc <= 10 then -- User-specified radius
-                            -- FOUND A PRIORITY TARGET!
-                            print(string.format("[Multi-Bot Debug] Priority Target Found: %s near location.", targetKey.Name))
-                            return targetPart, targetKey -- Return immediately
-                        end
-                    end
-                end
-            end
-        end
-        -- If we get here, no priority targets were found. Proceed to normal search.
-        -- print("[Multi-Bot Debug] No priority targets found. Proceeding with normal search.")
-    end
-    -- === END OF PRIORITY CHECK ===
-
-    -- Original "find closest" logic
-    for _, obj in ipairs(Workspace:GetDescendants()) do
+        -- V45: Normal Target Check
         for _, name in ipairs(names) do
             if string.lower(obj.Name) == string.lower(name) then 
-                local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
+                targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
                 
-                local targetKey = nil
                 if targetPart and targetPart.Parent:FindFirstChildOfClass("Humanoid") then
                     targetKey = targetPart.Parent 
                 elseif targetPart and targetPart:IsA("BasePart") then
@@ -270,24 +274,30 @@ function MultiGrinder:findClosestTarget(position, names)
                 end
 
                 if targetPart and targetPart.Position and targetPart.Parent ~= LocalPlayer.Character then
-                    
                     if targetKey and self.IgnoredTargets[targetKey] then
-                        continue -- Skip this ignored target
-                    end
-
-                    local dist = (targetPart.Position - position).Magnitude
-                    
-                    if dist < searchRadius and dist < minDistance then
-                        minDistance = dist
-                        closestTargetPart = targetPart -- Store the HRP/Part for teleporting
-                        closestTargetKey = targetKey -- Store the identifier key separately
+                        -- Skip this ignored target
+                    else
+                        local dist = (targetPart.Position - position).Magnitude
+                        if dist < searchRadius and dist < minDistance then
+                            minDistance = dist
+                            closestTargetPart = targetPart
+                            closestTargetKey = targetKey
+                        end
                     end
                 end
+                break -- Found match, no need to check other names for this obj
             end
         end
+    end -- End of single pass loop
+
+    -- V45: Prioritize returning the priority target
+    if priorityTargetPart then
+        print(string.format("[Multi-Bot Debug] Priority Target Found: %s near location.", priorityTargetKey.Name))
+        return priorityTargetPart, priorityTargetKey, priorityLocation
     end
     
-    return closestTargetPart, closestTargetKey, nil -- V44: Return nil for priority location
+    -- V44: Return normal target if no priority one was found
+    return closestTargetPart, closestTargetKey, nil
 end
 
 -- =========================================================================
@@ -1114,4 +1124,5 @@ pcall(function()
     local bot = MultiGrinder:new()
     bot:start()
 end)
+
 
