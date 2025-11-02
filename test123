@@ -1320,12 +1320,15 @@ end
 
 -- SCRIPT EXECUTION
 
--- [FIX 2] Wrap the execution in a function and return it.
--- This makes the script compatible with executors that load
--- the script and expect a function to be returned.
-return function()
+-- [FIX 3] Spawn the main logic in a new thread.
+-- This prevents script errors from blocking the executor and avoids
+-- issues with 'WaitForChild' running before the game is fully loaded.
+task.spawn(function()
     pcall(function()
         local bot = MultiGrinder:new()
         bot:start()
     end)
-end
+end)
+
+-- We no longer return a function, as that didn't seem to solve the issue.
+
