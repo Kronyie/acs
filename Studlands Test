@@ -1,5 +1,10 @@
 --[[
-  Refactored Multi-Bot (V43 - Ignore Fix)
+  Refactored Multi-Bot (V44 - TP on Respawn)
+
+  *** V44 NEW FEATURE ***
+  - Added "TP on Respawn: ON/OFF" toggle button to the General tab (ON by default).
+  - When enabled, the bot will remember your last farming position.
+  - If you die, it will automatically teleport you back to that position after you respawn.
 
   *** V43 FIX: Ignore Not Persisting ***
   - Fixed a logic error in findClosestTarget that caused the bot to re-target ignored mobs.
@@ -9,9 +14,7 @@
   *** V42 NEW FEATURE ***
   - Added "10s Auto-Ignore: ON/OFF" toggle button to the General tab.
   - This allows you to disable the feature that automatically ignores mobs if they are not killed within 10 seconds.
-  - The feature is ON by default.
   
-  (Previous feature/fix notes removed for brevity. This is the latest functional version.)
 --]]
 
 -- LAG REDUCTION EDIT: FarmSpeed set to 0.25 (4x/sec) to reduce lag.
@@ -31,7 +34,7 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V43)", 
+    ScriptName = "Studlands (V44)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.25, -- EDITED: Was 0.05 (20x/sec). Changed to 0.25 (4x/sec) to reduce lag.
     
@@ -122,6 +125,10 @@ function MultiGrinder:new()
         TargetAcquiredTime = nil, -- For auto-ignore timer
         AutoIgnoreEnabled = true, -- NEW (V42): Toggle for 10s auto-ignore
         
+        -- NEW (V44): Teleport on Respawn state
+        LastKnownPosition = nil,
+        TeleportOnRespawnEnabled = true,
+
         -- Persistent GUI State
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
         IsMinimized = false,
@@ -132,7 +139,18 @@ function MultiGrinder:new()
     
     -- CharacterAdded Listener to handle respawn AND GUI persistence
     LocalPlayer.CharacterAdded:Connect(function(character)
-        task.wait(0.5) 
+        task.wait(0.5) -- Wait for character to be fully loaded
+
+        -- NEW (V44): Teleport on Respawn Logic
+        if self.Enabled and self.TeleportOnRespawnEnabled and self.LastKnownPosition then
+            print("[Multi-Bot Debug] Teleporting back to last known position after respawn.")
+            local newHrp = character:WaitForChild("HumanoidRootPart", 2)
+            if newHrp then
+                newHrp.CFrame = CFrame.new(self.LastKnownPosition)
+            else
+                warn("[Multi-Bot Debug] Could not find new HRP to teleport on respawn.")
+            end
+        end
         
         -- State Fixes (re-equip)
         self.EquippedToolName = nil 
@@ -327,6 +345,10 @@ function MultiGrinder:executeCombatAction(hrp)
     
     local offset = CONFIG.Combat.TeleportOffset
     local targetPos = target.Position + offset
+    
+    -- NEW (V44): Store last position before teleporting
+    self.LastKnownPosition = hrp.Position
+    
     hrp.CFrame = CFrame.new(targetPos)
     
     if Camera and target and target.Position then 
@@ -399,6 +421,10 @@ function MultiGrinder:executeMiningAction(hrp)
     
     local offset = CONFIG.Mining.TeleportOffset
     local resourcePos = resource.Position + offset
+    
+    -- NEW (V44): Store last position before teleporting
+    self.LastKnownPosition = hrp.Position
+    
     hrp.CFrame = CFrame.new(resourcePos)
     
     if Camera and resource and resource.Position then 
@@ -450,6 +476,7 @@ function MultiGrinder:updateGUI()
     local modeButton = self.MainGui.GeneralPage.ModeButton
     local ignoreButton = self.MainGui.GeneralPage.IgnoreButton 
     local autoIgnoreButton = self.MainGui.GeneralPage.AutoIgnoreButton 
+    local tpRespawnButton = self.MainGui.GeneralPage.TeleportOnRespawnButton -- NEW (V44)
     
     if self.Enabled then
         toggleButton.Text = "ON"
@@ -484,6 +511,15 @@ function MultiGrinder:updateGUI()
     else
         autoIgnoreButton.Text = "10s Auto-Ignore: OFF"
         autoIgnoreButton.BackgroundColor3 = CONFIG.ToggleOffColor
+    end
+
+    -- NEW (V44): Update Teleport on Respawn Button
+    if self.TeleportOnRespawnEnabled then
+        tpRespawnButton.Text = "TP on Respawn: ON"
+        tpRespawnButton.BackgroundColor3 = CONFIG.ToggleOnColor
+    else
+        tpRespawnButton.Text = "TP on Respawn: OFF"
+        tpRespawnButton.BackgroundColor3 = CONFIG.ToggleOffColor
     end
 
     local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
@@ -740,6 +776,12 @@ function MultiGrinder:setupGUI()
         self.TargetAcquiredTime = nil 
         if not self.Enabled then
             restoreCamera(self) 
+        else
+            -- NEW (V44): Store position when enabling
+            local hrp = self:getHumanoidRootPart()
+            if hrp then
+                self.LastKnownPosition = hrp.Position
+            end
         end
         self:updateGUI()
         print(string.format("[Multi-Bot Debug] Bot Toggled: %s", self.Enabled and "ON" or "OFF"))
@@ -811,6 +853,16 @@ function MultiGrinder:setupGUI()
         print(string.format("[Multi-Bot Debug] Auto-Ignore Toggled: %s", self.AutoIgnoreEnabled and "ON" or "OFF"))
     end)
 
+    -- NEW (V44): Teleport on Respawn Button
+    local TeleportOnRespawnButton = createButton(GeneralPage, "TP on Respawn: ON", CONFIG.ToggleOnColor)
+    TeleportOnRespawnButton.Name = "TeleportOnRespawnButton"
+    TeleportOnRespawnButton.MouseButton1Click:Connect(function()
+        self.TeleportOnRespawnEnabled = not self.TeleportOnRespawnEnabled
+        self:updateGUI()
+        print(string.format("[Multi-Bot Debug] Teleport on Respawn Toggled: %s", self.TeleportOnRespawnEnabled and "ON" or "OFF"))
+    end)
+
+
     Pages["General"] = GeneralPage
     
     local CombatPage = createContentPage(ContentContainer, "Combat")
@@ -841,9 +893,7 @@ function MultiGrinder:setupGUI()
     
     local CRangeLabel = Instance.new("TextLabel")
     CRangeLabel.Text = "Search Range: Full Map (Continuous Attack)"
-    CRangeLabel.Size = UDim2.new(1, 0, 0, 20)
-    CRangeLabel.BackgroundTransparency = 1
-    CRangeLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    CRangeColor = Color3.fromRGB(150, 150, 150)
     CRangeLabel.Font = Enum.Font.Gotham
     CRangeLabel.TextSize = 12
     CRangeLabel.TextXAlignment = Enum.TextXAlignment.Center
@@ -912,6 +962,7 @@ function MultiGrinder:setupGUI()
             IgnoreButton = IgnoreButton, 
             ClearIgnoreButton = ClearIgnoreButton, 
             AutoIgnoreButton = AutoIgnoreButton, 
+            TeleportOnRespawnButton = TeleportOnRespawnButton, -- NEW (V44)
         },
         CombatPage = {
             ToolNameInput = CToolNameInput,
