@@ -65,7 +65,7 @@ local CONFIG = {
     -- Teleport configuration (Defaults)
     Combat = {
         ToolName = "Unstable Cylindery Hammer", -- Set to your suspected tool name
-        TargetNames = {"Musheynator", "Mushmasher", "Big Mushman", "Mystic Mimic", "Bluecapey", "Cylindery"}, 
+        TargetNames = {"Crab Champion"}, 
         TeleportOffset = Vector3.new(0, 5, 5), 
     },
 
