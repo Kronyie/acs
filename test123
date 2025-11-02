@@ -666,7 +666,7 @@ function MultiGrinder:updateGUI()
         label.Text = string.format("Priority Zones: %d / 15", zoneCount)
         
         local isFull = (zoneCount >= 15)
-        button.Sensitive = not isFull
+        button.Active = not isFull -- FIX: Changed 'Sensitive' to 'Active'
         button.BackgroundColor3 = isFull and Color3.fromRGB(80, 80, 80) or CONFIG.AccentColor
         button.Text = isFull and "Priority Zones Full (15/15)" or "Set Priority Zone (at HRP)"
     end
@@ -1182,3 +1182,4 @@ pcall(function()
     local bot = MultiGrinder:new()
     bot:start()
 end)
+
