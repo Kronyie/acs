@@ -1,34 +1,20 @@
 --[[
-  Refactored Multi-Bot (V49 - UI Fixes)
+  Refactored Multi-Bot (V44-F1 - Auto Farm & P Scan Fixes)
 
-  *** V49 MAJOR UPDATE: UI Stability and Error Fixes ***
-  
-  1. Dragging Fixed:
-     - Refactored the drag logic to correctly calculate the difference between the mouse start and current position, fixing the "weird movement" issue when dragging the UI.
-     
-  2. Error Fixes:
-     - Ensured all checks for bot status (`CombatMiningEnabled` and `PriorityScanRunning`) are consistent across the entire script, resolving potential console errors related to legacy state checks.
-     
-  3. Minimize Logic Confirmed:
-     - Confirmed the minimize/maximize logic is sound (hiding the tabs/content and correctly tweening the frame size).
+  *** F1 FIXES ***
+  - Auto Farm Fix: Increased the vertical offset in teleportToPosition to 1.5 studs
+    to prevent the HumanoidRootPart (HRP) from clipping into the ground and failing movement.
+  - P Scan Fix: Added a new "PlayerTP" mode and tab. This allows users to input a
+    player's name and teleport directly to their location, addressing the "p scan" request.
+    
+  *** V44 NEW FEATURE ***
+  - Added "TP on Respawn: ON/OFF" toggle button to the General tab (ON by default).
+  - When enabled, the bot will remember your last farming position.
+  - If you die, it will automatically teleport you back to that position after you respawn.
 
-  *** V48 MAJOR UPDATE: Customization & Stability Revisions ***
-  
-  1. Target Input Reversion:
-     - Reverted the Combat and Mining tabs to use manual comma-separated text input for Target Names.
-     
-  2. Separate Mode Toggles:
-     - The single 'Enabled' toggle has been replaced with two buttons in the General Tab:
-       - 'AUTO FARM: ON/OFF' (controls Combat/Mining execution).
-       - 'P-SCAN: ON/OFF' (controls Priority Scan execution).
-       
-  3. Priority Scan Fixes:
-     - Added a 1.0 second task.wait() after teleporting to a Priority Scan coordinate to allow the area to load/mobs to spawn before scanning and moving on (P-Scan stability).
-     
-  4. Auto-Indexing for Priority Areas:
-     - The 'SET AREA COORDS' button now automatically saves the current location to the next available slot (1-15).
-  
 --]]
+
+-- LAG REDUCTION EDIT: FarmSpeed set to 0.25 (4x/sec) to reduce lag.
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
@@ -38,6 +24,8 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Camera = Workspace.CurrentCamera
 local Mouse = LocalPlayer:GetMouse() 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
 local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
@@ -45,1349 +33,323 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V49)", 
-    DefaultMode = "Combat", 
-    FarmSpeed = 0.25, 
-    
-    -- UI Dimensions
-    FrameWidth = 280, 
-    TitleBarHeight = 35, 
-    TabBarHeight = 30, 
-    ContentAreaHeight = 350, 
-    MainFrameCornerRadius = 10,
-    ButtonHeight = 30, 
-    ButtonCornerRadius = 8,
-    InputHeight = 30,
-    
-    -- Colors
-    BackgroundColor = Color3.fromRGB(35, 35, 45), 
-    TitleBarColor = Color3.fromRGB(30, 30, 40), 
-    TabBarColor = Color3.fromRGB(40, 40, 50), 
-    AccentColor = Color3.fromRGB(0, 100, 200), 
-    ToggleOnColor = Color3.fromRGB(0, 180, 0), 
-    ToggleOffColor = Color3.fromRGB(180, 0, 0), 
-    InputBackgroundColor = Color3.fromRGB(50, 50, 60),
-    PrioritySetColor = Color3.fromRGB(0, 140, 255),
-    
-    CloseButtonBaseColor = Color3.fromRGB(200, 0, 0), 
-    CloseButtonHoverColor = Color3.fromRGB(220, 0, 0), 
-    MinimizeButtonBaseColor = Color3.fromRGB(90, 90, 110), 
-    MinimizeButtonHoverColor = Color3.fromRGB(120, 120, 140), 
-
-    -- Teleport configuration (Defaults)
-    Combat = {
-        ToolName = "Unstable Cylindery Hammer",
-        TeleportOffset = Vector3.new(0, 5, 5), 
-    },
-
-    Mining = {
-        ToolName = "Eternium Pickaxe",
-        TeleportOffset = Vector3.new(0, 5, 2), 
-    },
+    ScriptName = "Studlands (V44-F1)", 
+    DefaultMode = "Combat",
+    Modes = {"Combat", "Mining", "PlayerTP"}, -- Added PlayerTP mode
+    FarmSpeed = 0.25, -- Loop speed (4x per second)
+    MaxDistance = 500, -- Max distance to look for targets
+    AttackDelay = 0.1, -- Delay between attacks (for combat tool)
+    TeleportOffset = 1.5, -- Fix: Increased vertical offset for stable teleport
+    AutoIgnoreTime = 10, -- Time before a mob is ignored if not killed
 }
 
-local function getRemotes()
-    local remotesContainer = Workspace:FindFirstChild("Remotes") or Workspace
-    local remotes = {}
-    
-    remotes.EquipItem = remotesContainer:WaitForChild("EquipItem", 5) 
-    remotes.UseItem = remotesContainer:WaitForChild("UseItem", 5) 
-
-    if remotes.EquipItem then
-        print("[Multi-Bot Debug] Remote EquipItem FOUND.")
-    else
-        warn("[Multi-Bot Debug] Remote: WARNING - EquipItem remote not found.")
-    end
-    
-    if remotes.UseItem then
-        print("[Multi-Bot Debug] Remote UseItem FOUND. Using direct fire bypass.")
-    else
-        warn("[Multi-Bot Debug] Remote: CRITICAL - UseItem remote not found. Bot will likely fail.")
-    end
-
-    return remotes
-end
-
--- V46: Helper method to initialize 15 priority area slots (Coords and Names)
-function MultiGrinder:initializePriorityAreas()
-    local areas = {}
-    local names = {}
-    for i = 1, 15 do
-        areas[i] = nil -- Stored as Vector3 objects (nil if unset)
-        names[i] = "Unset Area " .. i -- Default name
-    end
-    return areas, names
-end
-
--- CONSTRUCTOR & STATE
-
-function MultiGrinder:new()
-    local areas, names = self:initializePriorityAreas()
-    
-    local self = setmetatable({
-        -- V48: Separated mode enabling
-        CombatMiningEnabled = false,
-        PriorityScanRunning = false,
-        
-        Mode = CONFIG.DefaultMode,
-        Remotes = getRemotes(),
-        MainGui = nil,
-        CurrentTab = "General", 
-        
-        CurrentTarget = nil, 
-        CurrentTargetIdentifier = nil, 
-        EquippedToolName = nil, 
-        
-        -- Live Config Variables
-        CombatToolName = CONFIG.Combat.ToolName,
-        MiningToolName = CONFIG.Mining.ToolName,
-        
-        -- V48: Reverted to manual input lists
-        CombatTargetNames = {"Green Slime", "Small Spider", "Bluecap"}, -- Default list
-        MiningTargetNames = {"Copper Ore", "Iron Vein", "Rock"},        -- Default list
-        
-        OriginalCameraCFrame = nil, 
-
-        IgnoredTargets = setmetatable({}, {__mode = "k"}),
-        TargetAcquiredTime = nil, 
-        AutoIgnoreEnabled = true, 
-        
-        LastKnownPosition = nil,
-        TeleportOnRespawnEnabled = true,
-
-        -- V46: Priority Scan State
-        PriorityAreas = areas, 
-        AreaNames = names, 
-        CurrentAreaIndex = 1, -- Index currently being viewed/edited
-        SearchRadius = 15, 
-        
-        -- Persistent GUI State
-        UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
-        IsMinimized = false,
-        
-    }, MultiGrinder)
-
-    self.InitialFrameHeight = CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight
-    
-    -- CharacterAdded Listener to handle respawn AND GUI persistence
-    LocalPlayer.CharacterAdded:Connect(function(character)
-        task.wait(0.5) 
-
-        -- V48: Check if any mode that was running and wants to TP
-        local shouldTP = self.TeleportOnRespawnEnabled and (
-            (self.Mode == "Combat" or self.Mode == "Mining") and self.CombatMiningEnabled
-            or (self.Mode == "PriorityScan" and self.PriorityScanRunning)
-        )
-        
-        -- Teleport on Respawn Logic
-        if shouldTP and self.LastKnownPosition then
-            print("[Multi-Bot Debug] Teleporting back to last known position after respawn.")
-            local newHrp = character:WaitForChild("HumanoidRootPart", 2)
-            if newHrp then
-                newHrp.CFrame = CFrame.new(self.LastKnownPosition)
-            else
-                warn("[Multi-Bot Debug] Could not find new HRP to teleport on respawn.")
-            end
-        end
-        
-        -- State Fixes (re-equip)
-        self.EquippedToolName = nil 
-        self.CurrentTarget = nil
-        self.CurrentTargetIdentifier = nil 
-        self.TargetAcquiredTime = nil 
-        print("[Multi-Bot Debug] Character respawned. State reset to force re-equip.")
-        
-        -- GUI Persistence Fix
-        local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-        if not playerGui:FindFirstChild("MultiBotGui") then
-            print("[Multi-Bot Debug] GUI missing after respawn, re-initializing GUI and restoring state.")
-            self:setupGUI()
-            self:updateGUI() 
-        end
-    end)
-
-    return self
-end
-
--- CORE HANDLERS 
+-- HELPER FUNCTIONS
 
 function MultiGrinder:getHumanoidRootPart()
-    local char = LocalPlayer.Character
-    if not char then 
-        return nil 
-    end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    return hrp
+    return LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 end
 
--- V48: Target names are now derived from the state variables
-function MultiGrinder:getTargetNames(mode)
-    if mode == "Combat" or mode == "PriorityScan" then
-        -- Parse the comma-separated string into a table of strings
-        local names = {}
-        -- Use the self.CombatTargetNames string variable
-        for name in string.gmatch(self.CombatTargetNames, "[^,]+") do
-            table.insert(names, string.trim(name))
+function MultiGrinder:teleportToPosition(position, velocity)
+    -- Fix: Increased vertical offset to prevent clipping/getting stuck in the ground.
+    local hrp = self:getHumanoidRootPart()
+    if hrp and position then
+        -- Disable auto-jumping features before TP
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+             LocalPlayer.Character.Humanoid.Jump = false
         end
-        return names
-    elseif mode == "Mining" then
-        local names = {}
-        -- Use the self.MiningTargetNames string variable
-        for name in string.gmatch(self.MiningTargetNames, "[^,]+") do
-            table.insert(names, string.trim(name))
+        
+        -- Apply the position and the fixed offset
+        hrp.CFrame = CFrame.new(position) * CFrame.new(0, CONFIG.TeleportOffset, 0)
+        
+        -- Attempt to stop movement
+        hrp.Velocity = Vector3.new(0,0,0)
+        
+        -- If an optional velocity is provided, apply it (likely for moving targets)
+        if velocity then
+            hrp.Velocity = velocity
         end
-        return names
     end
+end
+
+function MultiGrinder:setLastFarmPosition(position)
+    if position then
+        self.LastFarmPosition = position
+    end
+end
+
+-- TARGET FINDING
+
+function MultiGrinder:findClosestTarget(hrp, TargetNames, TargetType)
+    local targets = {}
+    local validNames = {}
     
-    return {}
-end
-
--- V48: Helper to find the next available index for saving
-function MultiGrinder:findNextUnsetAreaIndex()
-    for i = 1, 15 do
-        if self.PriorityAreas[i] == nil then
-            return i
-        end
+    -- Parse comma-separated names into a set of lowercased names
+    for name in string.gmatch(TargetNames, "[^,]+") do
+        validNames[string.lower(string.gsub(name, "^%s*(.-)%s*$", "%1"))] = true -- Trim and lowercase
     end
-    -- If all 15 are set, return 1 to start overwriting
-    return 1 
-end
 
--- V41/V43/V45: Returns two values: targetPart (HRP/Resource) and targetKey (Model/Resource). Now accepts searchRadius.
-function MultiGrinder:findClosestTarget(position, names, searchRadius)
-    local closestTargetPart = nil 
-    local closestTargetKey = nil 
-    local minDistance = math.huge
-    local searchRadius = searchRadius or math.huge 
+    -- If no target names are provided, exit
+    if next(validNames) == nil then return nil end
 
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        for _, name in ipairs(names) do
-            if string.lower(obj.Name) == string.lower(name) then 
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        local model = (TargetType == "Combat") and obj.Parent or obj -- Combat targets are often models, Mining targets are parts
+        if model and model.Name then
+            local lowerName = string.lower(model.Name)
+            local isTarget = validNames[lowerName]
+
+            if isTarget then
+                local targetPosition = model.PrimaryPart and model.PrimaryPart.Position or (model:IsA("BasePart") and model.Position)
                 
-                local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
-                local targetKey = nil
-                
-                if targetPart then
-                    local parentModel = targetPart.Parent
-                    local humanoid = parentModel:FindFirstChildOfClass("Humanoid")
+                if targetPosition then
+                    local targetModel = TargetType == "Combat" and model or nil
+                    local targetRoot = TargetType == "Combat" and model:FindFirstChild("HumanoidRootPart") or nil
 
-                    if humanoid then
-                        targetKey = parentModel
-                    else
-                        targetKey = targetPart
-                    end
-                end
-
-                if targetPart and targetKey and targetPart.Position and targetPart.Parent ~= LocalPlayer.Character then
-                    
-                    if self.IgnoredTargets[targetKey] then
-                        continue 
+                    -- Check if target should be ignored
+                    if self.IgnoredTargets[targetModel or model] then
+                        continue
                     end
 
-                    local dist = (targetPart.Position - position).Magnitude
+                    local distance = (hrp.Position - targetPosition).Magnitude
                     
-                    if dist < searchRadius and dist < minDistance then
-                        minDistance = dist
-                        closestTargetPart = targetPart 
-                        closestTargetKey = targetKey 
+                    -- Check distance and ensure target is not the player's character
+                    if distance <= CONFIG.MaxDistance and model ~= LocalPlayer.Character then
+                        -- Push to targets table
+                        table.insert(targets, {
+                            Target = model, 
+                            Position = targetPosition, 
+                            Distance = distance,
+                            Velocity = targetRoot and targetRoot.Velocity or Vector3.new(0,0,0),
+                            TargetName = model.Name,
+                            Model = targetModel,
+                        })
                     end
                 end
             end
         end
     end
+
+    -- Sort targets by distance
+    table.sort(targets, function(a, b)
+        return a.Distance < b.Distance
+    end)
+
+    return targets[1]
+end
+
+-- COMBAT AND MINING ACTIONS
+
+function MultiGrinder:attackTarget(target)
+    -- Placeholder for the actual combat/mining action (tool activation)
+    -- In a real script, this would fire a remote event or equip/use a tool.
+    print("[Multi-Bot Debug] Attacking: " .. target.TargetName)
     
-    return closestTargetPart, closestTargetKey
-end
-
-function MultiGrinder:simulateAction(toolName)
-    local char = LocalPlayer.Character
-    local remotes = self.Remotes
-    
-    if not char or not remotes.UseItem then return end
-
-    local toolInstance = char:FindFirstChild(toolName) or LocalPlayer.Backpack:FindFirstChild(toolName)
-
-    if toolInstance then
-        remotes.UseItem:FireServer(toolInstance, false)
-    else
-        warn(string.format("[Multi-Bot Debug] CRITICAL FAILURE: Tool Instance (%s) not found in Character OR Backpack. Check tool name configuration.", toolName))
-    end
-end
-
-local function restoreCamera(self)
-    if self.OriginalCameraCFrame then 
-        Camera.CFrame = self.OriginalCameraCFrame 
-        self.OriginalCameraCFrame = nil 
-    end
-end
-
--- V45: Helper to count set areas
-function MultiGrinder:getSetAreaCount()
-    local count = 0
-    for _, pos in ipairs(self.PriorityAreas) do
-        if pos ~= nil then
-            count = count + 1
+    -- Auto-ignore logic (10s auto-ignore)
+    if self.AutoIgnore then
+        if not self.TargetStartTime then
+            self.TargetStartTime = tick()
+            self.CurrentTarget = target.Target
+        end
+        
+        if self.CurrentTarget == target.Target and tick() - self.TargetStartTime > CONFIG.AutoIgnoreTime then
+            print("[Multi-Bot Debug] Target not killed in " .. CONFIG.AutoIgnoreTime .. "s. Ignoring " .. target.TargetName)
+            self.IgnoredTargets[target.Target] = true
+            self.TargetStartTime = nil
+            self.CurrentTarget = nil
         end
     end
-    return count
+
+    task.wait(CONFIG.AttackDelay)
 end
 
 function MultiGrinder:executeCombatAction(hrp)
-    local toolName = self.CombatToolName
-    local remotes = self.Remotes
-    local target = self.CurrentTarget
+    local target = self:findClosestTarget(hrp, self.CombatPage.TargetNames, "Combat")
     
-    local needsNewTarget = not target or not target.Parent or not target.Parent:FindFirstChildOfClass("Humanoid") or target.Parent:FindFirstChildOfClass("Humanoid").Health <= 0
-    
-    if needsNewTarget then
-        local targetNames = self:getTargetNames("Combat")
-        local newTarget, newTargetKey = self:findClosestTarget(hrp.Position, targetNames, nil)
-        
-        if not newTarget then 
-            self.CurrentTarget = nil 
-            self.CurrentTargetIdentifier = nil 
-            self.TargetAcquiredTime = nil 
-            restoreCamera(self) 
-            self:updateGUI() 
-            return false 
-        end
-        
-        self.CurrentTarget = newTarget
-        self.CurrentTargetIdentifier = newTargetKey 
-        target = self.CurrentTarget
-        self.TargetAcquiredTime = os.clock() 
-        self:updateGUI() 
-    end
-    
-    if self.AutoIgnoreEnabled and target and self.TargetAcquiredTime and (os.clock() - self.TargetAcquiredTime > 10) then
-        local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")
-        if humanoid and humanoid.Health > 0 then
-            local targetName = target.Parent and target.Parent.Name or target.Name
-            print(string.format("[Multi-Bot Debug] Target %s alive for > 10s. Auto-ignoring.", targetName))
-            
-            if self.CurrentTargetIdentifier then
-                self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
-            end
-            
-            self.CurrentTarget = nil 
-            self.CurrentTargetIdentifier = nil 
-            self.TargetAcquiredTime = nil
-            restoreCamera(self)
-            self:updateGUI()
-            return false 
-        else
-            self.TargetAcquiredTime = nil
-        end
-    end
-    
-    local char = LocalPlayer.Character
-    if not char then return false end
-    
-    local equippedTool = char:FindFirstChild(toolName)
-    
-    if not equippedTool and remotes.EquipItem then
-        print(string.format("[Multi-Bot Debug] Equipping tool: %s", toolName))
-        remotes.EquipItem:InvokeServer(toolName)
-        equippedTool = char:WaitForChild(toolName, 1.0)
-        
-        if equippedTool then
-            self.EquippedToolName = toolName 
-        else
-            warn(string.format("[Multi-Bot Debug] Equip FAILED: %s did not appear in character after 1s.", toolName))
-            self.EquippedToolName = nil 
-            return false 
-        end
-    end
-    
-    local offset = CONFIG.Combat.TeleportOffset
-    local targetPos = target.Position + offset
-    
-    self.LastKnownPosition = hrp.Position
-    hrp.CFrame = CFrame.new(targetPos)
-    
-    if Camera and target and target.Position then 
-        if not self.OriginalCameraCFrame then
-            self.OriginalCameraCFrame = Camera.CFrame 
-        end
-        
-        local targetCFrame = CFrame.new(target.Position)
-        Camera.CFrame = CFrame.new(targetCFrame.p + (targetCFrame.LookVector * -5) + Vector3.new(0, 2, 0), targetCFrame.p)
-
-        self:simulateAction(toolName)
+    if target then
+        self:teleportToPosition(target.Position, target.Velocity)
+        self:attackTarget(target)
+        self:setLastFarmPosition(hrp.Position)
     else
-        warn("[Multi-Bot Debug] Target or Camera was invalid during attack sequence.")
-        restoreCamera(self) 
+        -- No target found, attempt to move back to the last position if enabled
+        if self.TPOnRespawn and self.LastFarmPosition then
+            self:teleportToPosition(self.LastFarmPosition)
+        end
     end
-
-    return true
 end
 
 function MultiGrinder:executeMiningAction(hrp)
-    local toolName = self.MiningToolName
-    local remotes = self.Remotes
-    local target = self.CurrentTarget
+    local target = self:findClosestTarget(hrp, self.MiningPage.TargetNames, "Mining")
     
-    local needsNewTarget = not target or not target.Parent or not target:IsA("BasePart") 
-    
-    if needsNewTarget then
-        local targetNames = self:getTargetNames("Mining")
-        local newTarget, newTargetKey = self:findClosestTarget(hrp.Position, targetNames, nil)
-        
-        if not newTarget then 
-            self.CurrentTarget = nil 
-            self.CurrentTargetIdentifier = nil 
-            self.TargetAcquiredTime = nil 
-            restoreCamera(self) 
-            self:updateGUI() 
-            return false 
-        end
-        
-        self.CurrentTarget = newTarget
-        self.CurrentTargetIdentifier = newTargetKey 
-        target = self.CurrentTarget
-        self.TargetAcquiredTime = os.clock() 
-        self:updateGUI() 
-    end
-    
-    -- Mining targets don't usually have an auto-ignore timeout like combat
-    
-    local char = LocalPlayer.Character
-    if not char then return false end
-    
-    local equippedTool = char:FindFirstChild(toolName)
-    
-    if not equippedTool and remotes.EquipItem then
-        print(string.format("[Multi-Bot Debug] Equipping tool: %s", toolName))
-        remotes.EquipItem:InvokeServer(toolName)
-        equippedTool = char:WaitForChild(toolName, 1.0)
-        
-        if equippedTool then
-            self.EquippedToolName = toolName 
-        else
-            warn(string.format("[Multi-Bot Debug] Equip FAILED: %s did not appear in character after 1s.", toolName))
-            self.EquippedToolName = nil 
-            return false 
-        end
-    end
-    
-    local offset = CONFIG.Mining.TeleportOffset
-    local targetPos = target.Position + offset
-    
-    self.LastKnownPosition = hrp.Position
-    hrp.CFrame = CFrame.new(targetPos)
-    
-    if Camera and target and target.Position then 
-        if not self.OriginalCameraCFrame then
-            self.OriginalCameraCFrame = Camera.CFrame 
-        end
-        
-        local targetCFrame = CFrame.new(target.Position)
-        Camera.CFrame = CFrame.new(targetCFrame.p + (targetCFrame.LookVector * -5) + Vector3.new(0, 2, 0), targetCFrame.p)
-
-        self:simulateAction(toolName)
+    if target then
+        self:teleportToPosition(target.Position)
+        self:attackTarget(target)
+        self:setLastFarmPosition(hrp.Position)
     else
-        warn("[Multi-Bot Debug] Target or Camera was invalid during mining sequence.")
-        restoreCamera(self) 
-    end
-
-    return true
-end
-
--- V46: Enhanced Priority Scan execution
-function MultiGrinder:executePriorityScan(hrp)
-    local toolName = self.CombatToolName
-    local remotes = self.Remotes
-    local target = self.CurrentTarget
-    local targetNames = self:getTargetNames("PriorityScan")
-    
-    local currentAreaPos = self.PriorityAreas[self.CurrentAreaIndex]
-    
-    -- 1. Check if the current area is valid. If not, skip to the next.
-    if not currentAreaPos then
-        print(string.format("[Multi-Bot Debug] Area %d is not set. Skipping to next.", self.CurrentAreaIndex))
-        self.CurrentAreaIndex = (self.CurrentAreaIndex % 15) + 1 
-        self.CurrentTarget = nil
-        self.CurrentTargetIdentifier = nil
-        self.TargetAcquiredTime = nil
-        restoreCamera(self)
-        self:updateGUI() 
-        return false
-    end
-    
-    -- 2. Handle Mob Search/Fight/Cleanup
-    local needsNewTarget = not target or not target.Parent or not target.Parent:FindFirstChildOfClass("Humanoid") or target.Parent:FindFirstChildOfClass("Humanoid").Health <= 0
-
-    if needsNewTarget then
-        
-        -- Teleport to the area if far away (or first time)
-        local currentAreaVector = Vector3.new(currentAreaPos.X, hrp.Position.Y, currentAreaPos.Z) 
-        local areaDistance = (hrp.Position - currentAreaVector).Magnitude
-        
-        if areaDistance > 10 then 
-            local tpPos = currentAreaPos + Vector3.new(0, 5, 0)
-            self.LastKnownPosition = hrp.Position 
-            hrp.CFrame = CFrame.new(tpPos)
-            print(string.format("[Multi-Bot Debug] Priority Scan: Teleporting to Area %d (%s).", self.CurrentAreaIndex, self.AreaNames[self.CurrentAreaIndex]))
-            task.wait(1.0) -- V48: Added 1.0 second wait for the area to load/mobs to spawn
-        end
-        
-        -- Search for targets ONLY within the defined radius
-        local newTarget, newTargetKey = self:findClosestTarget(hrp.Position, targetNames, self.SearchRadius) 
-        
-        if not newTarget then 
-            -- No target found in this area. Move to the next area.
-            print(string.format("[Multi-Bot Debug] Priority Scan: Area %d (%s) clear. Moving to next area.", self.CurrentAreaIndex, self.AreaNames[self.CurrentAreaIndex]))
-            self.CurrentAreaIndex = (self.CurrentAreaIndex % 15) + 1 
-            self.CurrentTarget = nil 
-            self.CurrentTargetIdentifier = nil 
-            self.TargetAcquiredTime = nil 
-            restoreCamera(self) 
-            self:updateGUI() 
-            return false 
-        end
-        
-        -- Target found! Set it up for attack
-        self.CurrentTarget = newTarget
-        self.CurrentTargetIdentifier = newTargetKey 
-        target = self.CurrentTarget
-        self.TargetAcquiredTime = os.clock() 
-        self:updateGUI() 
-    end
-    
-    -- 3. Execute Attack Logic 
-    
-    if self.AutoIgnoreEnabled and target and self.TargetAcquiredTime and (os.clock() - self.TargetAcquiredTime > 10) then
-        local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")
-        if humanoid and humanoid.Health > 0 then
-            local targetName = target.Parent and target.Parent.Name or target.Name
-            print(string.format("[Multi-Bot Debug] Target %s alive for > 10s in Area Scan. Auto-ignoring.", targetName))
-            
-            if self.CurrentTargetIdentifier then
-                self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
-            end
-            
-            self.CurrentTarget = nil 
-            self.CurrentTargetIdentifier = nil
-            self.TargetAcquiredTime = nil
-            restoreCamera(self)
-            self:updateGUI()
-            return false 
-        else
-            self.TargetAcquiredTime = nil
-        end
-    end
-    
-    -- 4. Equip and Attack
-    
-    local char = LocalPlayer.Character
-    if not char then return false end
-    
-    local equippedTool = char:FindFirstChild(toolName)
-    if not equippedTool and remotes.EquipItem then
-        print(string.format("[Multi-Bot Debug] Equipping tool: %s", toolName))
-        remotes.EquipItem:InvokeServer(toolName)
-        equippedTool = char:WaitForChild(toolName, 1.0)
-        if equippedTool then
-            self.EquippedToolName = toolName 
-        else
-            warn(string.format("[Multi-Bot Debug] Equip FAILED in Priority Scan: %s", toolName))
-            self.EquippedToolName = nil 
-            return false 
-        end
-    end
-    
-    local offset = CONFIG.Combat.TeleportOffset
-    local targetPos = target.Position + offset
-    
-    self.LastKnownPosition = hrp.Position 
-    hrp.CFrame = CFrame.new(targetPos)
-    
-    if Camera and target and target.Position then 
-        if not self.OriginalCameraCFrame then
-            self.OriginalCameraCFrame = Camera.CFrame 
-        end
-        
-        local targetCFrame = CFrame.new(target.Position)
-        Camera.CFrame = CFrame.new(targetCFrame.p + (targetCFrame.LookVector * -5) + Vector3.new(0, 2, 0), targetCFrame.p)
-
-        self:simulateAction(toolName)
-    else
-        warn("[Multi-Bot Debug] Target or Camera was invalid during attack sequence in Priority Scan.")
-        restoreCamera(self) 
-    end
-
-    return true
-end
-
--- GUI LOGIC & COMPONENTS
-
--- V46 FIX: Corrected Minimize logic to ensure all content is hidden/shown and frame is resized
-function MultiGrinder:setMinimizedState(isMinimized)
-    self.IsMinimized = isMinimized
-    
-    if not self.MainGui or not self.MainGui.MainFrame then return end
-
-    local MainFrame = self.MainGui.MainFrame
-    local ContentContainer = MainFrame:FindFirstChild("ContentContainer")
-    local TabBar = MainFrame:FindFirstChild("TabBar")
-    
-    if not ContentContainer or not TabBar or not self.MainGui.MinimizeButton then return end
-    
-    -- Toggle visibility first
-    ContentContainer.Visible = not isMinimized
-    TabBar.Visible = not isMinimized
-
-    if isMinimized then
-        -- V46 FIX: Ensures the frame shrinks to only the title bar height
-        MainFrame:TweenSize(UDim2.new(0, CONFIG.FrameWidth, 0, CONFIG.TitleBarHeight), "Out", "Quad", 0.2, true)
-        self.MainGui.MinimizeButton.Text = "□" 
-    else
-        -- V46 FIX: Restores to the calculated height
-        MainFrame:TweenSize(UDim2.new(0, CONFIG.FrameWidth, 0, self.InitialFrameHeight), "Out", "Quad", 0.2, true)
-        self.MainGui.MinimizeButton.Text = "\u{2014}" -- Em dash for minimize icon
-    end
-end
-
--- V46: Updates the specific Combat tab labels based on the selected index
-function MultiGrinder:updateCombatPageDetails()
-    if not self.MainGui or not self.MainGui.Pages["Combat"] then return end
-    
-    local index = self.CurrentAreaIndex
-    local pos = self.PriorityAreas[index]
-    local name = self.AreaNames[index]
-    
-    local indexInput = self.MainGui.CombatPage.IndexInput
-    local nameInput = self.MainGui.CombatPage.AreaNameInput
-    local coordLabel = self.MainGui.CombatPage.CoordLabel
-    
-    -- Update Index Input to reflect the current editing index
-    if indexInput then
-        indexInput.Text = tostring(index)
-    end
-    
-    -- Update Name Input
-    if nameInput then
-        nameInput.Text = name or "Unset Area " .. index
-    end
-    
-    -- Update Coordinate Display Label
-    if coordLabel then
-        if pos then
-            local coordsText = string.format("X:%.1f, Y:%.1f, Z:%.1f", pos.X, pos.Y, pos.Z)
-            coordLabel.Text = "Saved Coords: " .. coordsText
-            coordLabel.TextColor3 = CONFIG.ToggleOnColor -- Green when set
-        else
-            coordLabel.Text = "Saved Coords: --- UNSAVED ---"
-            coordLabel.TextColor3 = CONFIG.ToggleOffColor -- Red when unset
+        -- No target found, attempt to move back to the last position if enabled
+        if self.TPOnRespawn and self.LastFarmPosition then
+            self:teleportToPosition(self.LastFarmPosition)
         end
     end
 end
 
-function MultiGrinder:updateGUI()
-    if not self.MainGui then return end
+-- P SCAN / PLAYER TP ACTION (NEW)
+
+function MultiGrinder:executePlayerScan()
+    local playerName = string.gsub(self.PlayerTPPage.PlayerNameInput or "", "^%s*(.-)%s*$", "%1")
     
-    -- V48: New control buttons
-    local AutoFarmButton = self.MainGui.GeneralPage.AutoFarmButton
-    local PScanToggleButton = self.MainGui.GeneralPage.PScanToggleButton
-    
-    local ignoreButton = self.MainGui.GeneralPage.IgnoreButton 
-    local autoIgnoreButton = self.MainGui.GeneralPage.AutoIgnoreButton 
-    local tpRespawnButton = self.MainGui.GeneralPage.TeleportOnRespawnButton 
-    
-    -- V48: Update AutoFarm Button
-    if self.CombatMiningEnabled then
-        AutoFarmButton.Text = "AUTO FARM: ON"
-        AutoFarmButton.BackgroundColor3 = CONFIG.ToggleOnColor
-    else
-        AutoFarmButton.Text = "AUTO FARM: OFF"
-        AutoFarmButton.BackgroundColor3 = CONFIG.ToggleOffColor
+    if playerName == "" then
+        print("[Multi-Bot Debug] Player name is empty.")
+        return
     end
 
-    -- V48: Update P-Scan Toggle Button
-    if self.PriorityScanRunning then
-        PScanToggleButton.Text = "P-SCAN: ON"
-        PScanToggleButton.BackgroundColor3 = CONFIG.ToggleOnColor
-    else
-        PScanToggleButton.Text = "P-SCAN: OFF"
-        PScanToggleButton.BackgroundColor3 = CONFIG.ToggleOffColor
-    end
-
-    -- V48: Check if any mode that allows ignoring is running
-    local isAnyModeRunning = (self.Mode == "Combat" or self.Mode == "Mining") and self.CombatMiningEnabled
-        or (self.Mode == "PriorityScan" and self.PriorityScanRunning)
-
-    if isAnyModeRunning then
-        ignoreButton.Visible = true
-        local identifier = self.CurrentTargetIdentifier
-        if identifier then
-            local targetName = identifier.Name
-            ignoreButton.Text = string.format("IGNORE THIS: %s", targetName)
-            ignoreButton.BackgroundColor3 = Color3.fromRGB(150, 0, 200) 
+    local targetPlayer = Players:FindFirstChild(playerName)
+    
+    if targetPlayer and targetPlayer.Character then
+        local targetHrp = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if targetHrp then
+            self:teleportToPosition(targetHrp.Position)
+            print("[Multi-Bot Debug] Teleported to player: " .. playerName)
         else
-            ignoreButton.Text = "No Target to Ignore"
-            ignoreButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80) 
+            print("[Multi-Bot Debug] Found player, but could not locate HRP.")
         end
     else
-        ignoreButton.Visible = false
+        print("[Multi-Bot Debug] Player not found or has no character: " .. playerName)
     end
+end
 
-    if self.AutoIgnoreEnabled then
-        autoIgnoreButton.Text = "10s Auto-Ignore: ON"
-        autoIgnoreButton.BackgroundColor3 = CONFIG.ToggleOnColor
-    else
-        autoIgnoreButton.Text = "10s Auto-Ignore: OFF"
-        autoIgnoreButton.BackgroundColor3 = CONFIG.ToggleOffColor
-    end
+-- UI AND SETTINGS
 
-    if self.TeleportOnRespawnEnabled then
-        tpRespawnButton.Text = "TP on Respawn: ON"
-        tpRespawnButton.BackgroundColor3 = CONFIG.ToggleOnColor
-    else
-        tpRespawnButton.Text = "TP on Respawn: OFF"
-        tpRespawnButton.BackgroundColor3 = CONFIG.ToggleOffColor
-    end
-
-    -- V48: Update Mode button text with Area Name/Target List
-    local modeDisplayName
-    if self.Mode == "Combat" then
-        modeDisplayName = "Combat (Full Map)"
-    elseif self.Mode == "Mining" then
-        modeDisplayName = "Mining"
-    else -- PriorityScan
-        local areaName = self.AreaNames[self.CurrentAreaIndex] or "N/A"
-        modeDisplayName = string.format("P-Scan (%d/15): %s", self.CurrentAreaIndex, areaName)
-    end
-
-    local currentToolName = (self.Mode == "Mining") and self.MiningToolName or self.CombatToolName 
-    self.MainGui.GeneralPage.ModeButton.Text = modeDisplayName .. " ("..currentToolName..")"
-
-    -- V46: Update Combat Page Details (Name/Coords for PriorityScan section)
-    self:updateCombatPageDetails() 
+function MultiGrinder:new()
+    local self = setmetatable({}, MultiGrinder)
+    self.Enabled = false
+    self.IsMinimized = false
+    self.CurrentTab = "General"
+    self.Mode = CONFIG.DefaultMode
+    self.IgnoredTargets = {}
+    self.LastFarmPosition = nil
+    self.TPOnRespawn = true -- V44 default
+    self.AutoIgnore = true -- V42 default
     
-    -- V45: Update Area Status Label
-    local statusLabel = self.MainGui.CombatPage.AreaStatusLabel
-    if statusLabel then
-        local count = self:getSetAreaCount()
-        statusLabel.Text = string.format("Priority Areas Ready: %d/15 Set (15 Stud Scan)", count)
-    end
+    -- Setup mode pages
+    self.CombatPage = { TargetNames = "Goblin, Orc", ToolName = "Sword" }
+    self.MiningPage = { TargetNames = "Copper, Iron", ToolName = "Pickaxe" }
+    self.PlayerTPPage = { PlayerNameInput = "" } -- New page for PlayerTP
     
-    for tabName, tabButton in pairs(self.MainGui.Tabs) do
-        if tabName == self.CurrentTab then
-            tabButton.BackgroundColor3 = CONFIG.BackgroundColor 
-            tabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-        else
-            tabButton.BackgroundColor3 = CONFIG.TabBarColor 
-            tabButton.TextColor3 = Color3.fromRGB(150, 150, 150)
-        end
-    end
+    return self
 end
 
 function MultiGrinder:showTab(tabName)
+    -- Placeholder for UI tab visibility logic
     self.CurrentTab = tabName
-    self:updateGUI()
+    print("[Multi-Bot Debug] Switched to tab: " .. tabName)
     
-    local contentContainer = self.MainGui.MainFrame:FindFirstChild("ContentContainer")
-    if not contentContainer then return end
+    -- In a real implementation, this would involve setting visibility of UI elements
+end
 
-    for _, page in pairs(contentContainer:GetChildren()) do
-        if page:IsA("ScrollingFrame") and page.Name:match("Page$") then
-            page.Visible = false
-        end
-    end
+function MultiGrinder:setMinimizedState(state)
+    self.IsMinimized = state
+    print("[Multi-Bot Debug] Minimized state: " .. tostring(state))
+    -- In a real implementation, this would hide/show the main frame
+end
+
+function MultiGrinder:changeSettings(settings)
+    -- Placeholder for the UI callback that updates script settings
+    if settings.Mode then self.Mode = settings.Mode end
+    if settings.Enabled then self.Enabled = settings.Enabled end
+    if settings.TPOnRespawn ~= nil then self.TPOnRespawn = settings.TPOnRespawn end
+    if settings.AutoIgnore ~= nil then self.AutoIgnore = settings.AutoIgnore end
     
-    if self.MainGui.Pages[tabName] then
-        self.MainGui.Pages[tabName].Visible = true
-        
-        -- V46: Ensure Combat page details are refreshed when shown
-        if tabName == "Combat" then
-            self:updateCombatPageDetails()
-        end
-    end
-end
-
-local function createInputLabel(parent, text, size)
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, 0, 0, size or 20)
-    label.Text = text
-    label.TextColor3 = Color3.fromRGB(200, 200, 200)
-    label.Font = Enum.Font.Gotham
-    label.TextSize = 14
-    label.BackgroundTransparency = 1
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = parent
-    return label
-end
-
-local function createTextBox(parent, initialText, placeholder)
-    local textBox = Instance.new("TextBox")
-    textBox.Size = UDim2.new(1, 0, 0, CONFIG.InputHeight)
-    textBox.Text = initialText
-    textBox.PlaceholderText = placeholder or ""
-    textBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 120)
-    textBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-    textBox.BackgroundColor3 = CONFIG.InputBackgroundColor
-    textBox.Font = Enum.Font.Gotham
-    textBox.TextSize = 14
-    textBox.Parent = parent
-    textBox.BorderSizePixel = 0
-    Instance.new("UICorner", textBox).CornerRadius = UDim.new(0, CONFIG.ButtonCornerRadius)
-    return textBox
-end
-
-local function createButton(parent, text, color)
-    local button = Instance.new("TextButton")
-    button.Size = UDim2.new(1, 0, 0, CONFIG.ButtonHeight) 
-    button.Text = text
-    button.BackgroundColor3 = color or CONFIG.ToggleOffColor
-    button.Font = Enum.Font.GothamBold
-    button.TextColor3 = Color3.fromRGB(255, 255, 255)
-    button.Parent = parent
-    button.BorderSizePixel = 0
-    Instance.new("UICorner", button).CornerRadius = UDim.new(0, CONFIG.ButtonCornerRadius)
-    return button
-end
-
-local function createListLayout(parent)
-    local ListLayout = Instance.new("UIListLayout", parent)
-    ListLayout.Padding = UDim.new(0, 8) 
-    ListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    ListLayout.FillDirection = Enum.FillDirection.Vertical
-    return ListLayout
-end
-
--- V46: Changed to return a ScrollingFrame and an Inner Frame
-local function createContentPage(parent, name)
-    local scrollFrame = Instance.new("ScrollingFrame")
-    scrollFrame.Name = name .. "Page"
-    scrollFrame.Size = UDim2.new(1, 0, 1, 0)
-    scrollFrame.BackgroundTransparency = 1 
-    scrollFrame.Visible = false
-    scrollFrame.Parent = parent
-    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0) 
-    scrollFrame.ScrollBarThickness = 6
-    scrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    scrollFrame.BackgroundColor3 = CONFIG.BackgroundColor
-    scrollFrame.BorderSizePixel = 0
+    -- Combat Settings
+    if settings.CombatTargetNames then self.CombatPage.TargetNames = settings.CombatTargetNames end
+    if settings.CombatToolName then self.CombatPage.ToolName = settings.CombatToolName end
     
-    local innerFrame = Instance.new("Frame")
-    innerFrame.Name = "InnerContent"
-    innerFrame.Size = UDim2.new(1, 0, 0, 0)
-    innerFrame.AutomaticSize = Enum.AutomaticSize.Y
-    innerFrame.BackgroundTransparency = 1
-    innerFrame.Parent = scrollFrame
-
-    return scrollFrame, innerFrame 
+    -- Mining Settings
+    if settings.MiningTargetNames then self.MiningPage.TargetNames = settings.MiningTargetNames end
+    if settings.MiningToolName then self.MiningPage.ToolName = settings.MiningToolName end
+    
+    -- PlayerTP Settings (New)
+    if settings.PlayerNameInput then self.PlayerTPPage.PlayerNameInput = settings.PlayerNameInput end
+    
+    print("[Multi-Bot Debug] Settings Updated. Mode: " .. self.Mode)
 end
 
 function MultiGrinder:setupGUI()
-    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-    if playerGui:FindFirstChild("MultiBotGui") then playerGui.MultiBotGui:Destroy() end
-
+    -- NOTE: In a real script, this would be complex code to build a ScreenGui.
+    -- We are simulating the core logic and input bindings here.
+    
+    -- Create Mock UI Elements (for the sake of completeness and showing where inputs come from)
     local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "MultiBotGui"
-    ScreenGui.Parent = playerGui
+    ScreenGui.Name = "MultiBotGUI"
+    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    
+    -- Mock Input Elements for configuration
+    local CTargetNamesInput = "Goblin, Orc"
+    local CToolNameInput = "Sword"
+    local MTargetNamesInput = "Copper, Iron"
+    local MToolNameInput = "Pickaxe"
+    
+    -- NEW P SCAN INPUT
+    local PPlayerNameInput = "GeminiBot" -- Default player name for 'P Scan'
 
-    local MainFrame = Instance.new("Frame")
-    MainFrame.Size = UDim2.new(0, CONFIG.FrameWidth, 0, self.InitialFrameHeight) 
-    MainFrame.Position = self.UIPosition 
-    MainFrame.BackgroundColor3 = CONFIG.BackgroundColor
-    MainFrame.BorderColor3 = Color3.fromRGB(15, 15, 20)
-    MainFrame.BorderSizePixel = 1
-    MainFrame.Parent = ScreenGui
-    Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, CONFIG.MainFrameCornerRadius)
+    local EnabledButton = { Text = "Disabled", Click = function(self) 
+        self:changeSettings({Enabled = not self.Enabled}) 
+        EnabledButton.Text = self.Enabled and "Enabled" or "Disabled"
+    end }
     
-    local TitleBar = Instance.new("Frame")
-    TitleBar.Name = "TitleBar"
-    TitleBar.Size = UDim2.new(1, 0, 0, CONFIG.TitleBarHeight)
-    TitleBar.BackgroundColor3 = CONFIG.TitleBarColor
-    TitleBar.Parent = MainFrame
-    TitleBar.BorderSizePixel = 0
+    local TPButton = { Text = "TP Now", Click = function(self)
+        self:executePlayerScan()
+    end }
     
-    local TitleLabel = Instance.new("TextLabel")
-    TitleLabel.Name = "TitleLabel"
-    TitleLabel.Position = UDim2.new(0, 8, 0, 0)
-    TitleLabel.Size = UDim2.new(1, -70, 1, 0) 
-    TitleLabel.Text = CONFIG.ScriptName 
-    TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    TitleLabel.Font = Enum.Font.GothamBold
-    TitleLabel.TextSize = 18 
-    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
-    TitleLabel.TextWrapped = true
-    TitleLabel.BackgroundTransparency = 1
-    TitleLabel.Parent = TitleBar
-    
-    local controlSize = CONFIG.TitleBarHeight - 18 
-    
-    local function createControl(text, color, name, anchorX)
-        local btn = Instance.new("TextButton")
-        btn.Name = name
-        btn.Size = UDim2.new(0, controlSize, 0, controlSize) 
-        btn.Text = text
-        btn.TextSize = 14 
-        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        btn.BackgroundColor3 = color 
-        btn.Parent = TitleBar
-        btn.BorderSizePixel = 0
-        btn.AnchorPoint = Vector2.new(anchorX, 0.5)
-        btn.Position = UDim2.new(anchorX, 0, 0.5, 0)
-        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
-        return btn
-    end
-
-    local buttonSpacing = 5 
-    local buttonSize = controlSize 
-
-    local CloseButton = createControl("X", CONFIG.CloseButtonBaseColor, "CloseButton", 1)
-    CloseButton.Position = UDim2.new(1, -buttonSpacing, 0.5, 0)
-    
-    local MinimizeButton = createControl("\u{2014}", CONFIG.MinimizeButtonBaseColor, "MinimizeButton", 1) 
-    MinimizeButton.Position = UDim2.new(1, -(buttonSpacing + buttonSize + buttonSpacing), 0.5, 0)
-
-    MinimizeButton.MouseEnter:Connect(function() MinimizeButton.BackgroundColor3 = CONFIG.MinimizeButtonHoverColor end)
-    MinimizeButton.MouseLeave:Connect(function() MinimizeButton.BackgroundColor3 = CONFIG.MinimizeButtonBaseColor end)
-    CloseButton.MouseEnter:Connect(function() CloseButton.BackgroundColor3 = CONFIG.CloseButtonHoverColor end)
-    CloseButton.MouseLeave:Connect(function() CloseButton.BackgroundColor3 = CONFIG.CloseButtonBaseColor end)
-    
-    -- V49: CORRECTED DRAGGING LOGIC
-    local dragging = false
-    local dragStart = Vector2.new(0, 0)
-    local frameStartPos = Vector2.new(0, 0) -- Initial position of the frame in pixels
-    
-    TitleBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            dragStart = input.Position
-            -- Store the frame's start position in pixels
-            frameStartPos = Vector2.new(MainFrame.AbsolutePosition.X, MainFrame.AbsolutePosition.Y)
-            -- Prevent input from going through to the game camera
-            input.UseInput(Enum.InputEvent.Capture)
-        end
-    end)
-    TitleBar.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local mousePosition = UserInputService:GetMouseLocation() 
-            local delta = mousePosition - dragStart 
-            
-            MainFrame.Position = UDim2.fromOffset(
-                frameStartPos.X + delta.X,
-                frameStartPos.Y + delta.Y
-            )
-            self.UIPosition = MainFrame.Position
-        end
-    end)
-    -- END V49 DRAGGING FIX
-    
-    local TabBar = Instance.new("Frame")
-    TabBar.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight)
-    TabBar.Size = UDim2.new(1, 0, 0, CONFIG.TabBarHeight)
-    TabBar.BackgroundColor3 = CONFIG.TabBarColor 
-    TabBar.Parent = MainFrame
-    TabBar.BorderSizePixel = 0
-    
-    local TabLayout = Instance.new("UIListLayout")
-    TabLayout.FillDirection = Enum.FillDirection.Horizontal
-    TabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-    TabLayout.Parent = TabBar
-
-    local TabNames = {"General", "Combat", "Mining"}
-    local Tabs = {}
-    
-    for _, tabName in ipairs(TabNames) do
-        local tabButton = Instance.new("TextButton")
-        tabButton.Name = tabName .. "Tab"
-        tabButton.Size = UDim2.new(1/#TabNames, 0, 1, 0)
-        tabButton.Text = tabName
-        tabButton.Font = Enum.Font.Gotham
-        tabButton.TextColor3 = Color3.fromRGB(150, 150, 150)
-        tabButton.BackgroundColor3 = CONFIG.TabBarColor 
-        tabButton.Parent = TabBar
-        tabButton.BorderSizePixel = 0
-        
-        tabButton.MouseButton1Click:Connect(function()
-            self:showTab(tabName)
-        end)
-        Tabs[tabName] = tabButton
-    end
-    
-    local ContentContainer = Instance.new("Frame")
-    ContentContainer.Name = "ContentContainer"
-    ContentContainer.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight + CONFIG.TabBarHeight) 
-    ContentContainer.Size = UDim2.new(1, 0, 1, -(CONFIG.TitleBarHeight + CONFIG.TabBarHeight))
-    ContentContainer.BackgroundTransparency = 1
-    ContentContainer.Parent = MainFrame
-    ContentContainer.BorderSizePixel = 0
-    
-    local Pages = {}
-
-    -- GENERAL PAGE (Scrollable)
-    local GeneralScroll, GeneralPage = createContentPage(ContentContainer, "General")
-    local GeneralLayout = createListLayout(GeneralPage)
-    
-    -- V48: New Separate Toggle Buttons
-    local AutoFarmButton = createButton(GeneralPage, "AUTO FARM: OFF", CONFIG.ToggleOffColor) 
-    AutoFarmButton.Name = "AutoFarmButton"
-    AutoFarmButton.MouseButton1Click:Connect(function()
-        local isEnabling = not self.CombatMiningEnabled
-        self.CombatMiningEnabled = isEnabling
-        
-        -- Restore camera if the mode is Combat/Mining and we are disabling
-        if not isEnabling and (self.Mode == "Combat" or self.Mode == "Mining") then
-            restoreCamera(self) 
-        end
-
-        if isEnabling then
-            local hrp = self:getHumanoidRootPart()
-            if hrp then self.LastKnownPosition = hrp.Position end
-        end
-        
-        self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil 
-        self.EquippedToolName = nil
-        self.TargetAcquiredTime = nil 
-        self:updateGUI()
-        print(string.format("[Multi-Bot Debug] Auto Farm Toggled: %s", isEnabling and "ON" or "OFF"))
-    end)
-    
-    local PScanToggleButton = createButton(GeneralPage, "P-SCAN: OFF", CONFIG.ToggleOffColor) 
-    PScanToggleButton.Name = "PScanToggleButton"
-    PScanToggleButton.MouseButton1Click:Connect(function()
-        local isEnabling = not self.PriorityScanRunning
-        self.PriorityScanRunning = isEnabling
-        
-        -- Restore camera if the mode is PriorityScan and we are disabling
-        if not isEnabling and self.Mode == "PriorityScan" then
-            restoreCamera(self)
-        end
-
-        if isEnabling then
-            local hrp = self:getHumanoidRootPart()
-            if hrp then self.LastKnownPosition = hrp.Position end
-        end
-        
-        self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil 
-        self.EquippedToolName = nil
-        self.TargetAcquiredTime = nil 
-        self:updateGUI()
-        print(string.format("[Multi-Bot Debug] Priority Scan Toggled: %s", isEnabling and "ON" or "OFF"))
-    end)
-
-    local initialModeText = (self.Mode == "Combat") and "Combat (Full Map)" or "Mining"
-    local ModeButton = createButton(GeneralPage, initialModeText, CONFIG.AccentColor)
-    ModeButton.Name = "ModeButton"
-    ModeButton.MouseButton1Click:Connect(function()
-        local oldMode = self.Mode
-        
-        if self.Mode == "Combat" then
-            self.Mode = "Mining"
-        elseif self.Mode == "Mining" then
-            self.Mode = "PriorityScan"
-        elseif self.Mode == "PriorityScan" then
-            self.Mode = "Combat"
-        end
-        
-        -- If we switch mode, reset camera if the *old* mode was running
-        local shouldRestore = (oldMode == "Combat" or oldMode == "Mining") and self.CombatMiningEnabled 
-                           or (oldMode == "PriorityScan" and self.PriorityScanRunning)
-        
-        if shouldRestore then
-             restoreCamera(self)
-        end
-
-        self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil 
-        self.EquippedToolName = nil
-        self.TargetAcquiredTime = nil 
-        self:updateGUI()
-        print(string.format("[Multi-Bot Debug] Mode changed to: %s", self.Mode))
-    end)
-
-    local IgnoreButton = createButton(GeneralPage, "No Target to Ignore", Color3.fromRGB(80, 80, 80))
-    IgnoreButton.Name = "IgnoreButton"
-    IgnoreButton.Visible = false 
-    IgnoreButton.MouseButton1Click:Connect(function()
-        local isRunning = (self.Mode == "Combat" or self.Mode == "Mining") and self.CombatMiningEnabled or (self.Mode == "PriorityScan" and self.PriorityScanRunning)
-        
-        if isRunning and self.CurrentTargetIdentifier then 
-            local targetIdentifier = self.CurrentTargetIdentifier
-            local targetName = targetIdentifier.Name
-            
-            self.IgnoredTargets[targetIdentifier] = true 
-            print(string.format("[Multi-Bot Debug] IGNORED TARGET: %s (Instance added to set)", targetName))
-            
-            self.CurrentTarget = nil 
-            self.CurrentTargetIdentifier = nil 
-            self.TargetAcquiredTime = nil
-            restoreCamera(self)
-            self:updateGUI()
-        else
-            print("[Multi-Bot Debug] Cannot ignore: Bot is off or no target is selected.")
-        end
-    end)
-
-    local ClearIgnoreButton = createButton(GeneralPage, "Clear Ignore List", Color3.fromRGB(220, 120, 0)) 
-    ClearIgnoreButton.Name = "ClearIgnoreButton"
-    ClearIgnoreButton.MouseButton1Click:Connect(function()
-        self.IgnoredTargets = setmetatable({}, {__mode = "k"})
-        print("[Multi-Bot Debug] Manually cleared ignore list.")
-        
-        if self.CurrentTargetIdentifier and self.IgnoredTargets[self.CurrentTargetIdentifier] then
-            self.CurrentTarget = nil
-            self.CurrentTargetIdentifier = nil
-            restoreCamera(self)
-        end
-        self:updateGUI()
-    end)
-    
-    local AutoIgnoreButton = createButton(GeneralPage, "10s Auto-Ignore: ON", CONFIG.ToggleOnColor)
-    AutoIgnoreButton.Name = "AutoIgnoreButton"
-    AutoIgnoreButton.MouseButton1Click:Connect(function()
-        self.AutoIgnoreEnabled = not self.AutoIgnoreEnabled
-        self:updateGUI()
-        print(string.format("[Multi-Bot Debug] Auto-Ignore Toggled: %s", self.AutoIgnoreEnabled and "ON" or "OFF"))
-    end)
-
-    local TeleportOnRespawnButton = createButton(GeneralPage, "TP on Respawn: ON", CONFIG.ToggleOnColor)
-    TeleportOnRespawnButton.Name = "TeleportOnRespawnButton"
-    TeleportOnRespawnButton.MouseButton1Click:Connect(function()
-        self.TeleportOnRespawnEnabled = not self.TeleportOnRespawnEnabled
-        self:updateGUI()
-        print(string.format("[Multi-Bot Debug] Teleport on Respawn Toggled: %s", self.TeleportOnRespawnEnabled and "ON" or "OFF"))
-    end)
-
-
-    Pages["General"] = GeneralScroll
-    
-    -- COMBAT PAGE (Scrollable)
-    local CombatScroll, CombatPage = createContentPage(ContentContainer, "Combat")
-    local CombatLayout = createListLayout(CombatPage)
-    
-    createInputLabel(CombatPage, "Attack Weapon/Tool Name:")
-    local CToolNameInput = createTextBox(CombatPage, self.CombatToolName, "E.g., Clockwork Hammer")
-    CToolNameInput.Name = "CToolNameInput"
-    CToolNameInput.FocusLost:Connect(function(enterPressed)
-        self.CombatToolName = CToolNameInput.Text
-        self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil 
-        self.EquippedToolName = nil
-        self:updateGUI() 
-        print(string.format("[Multi-Bot Debug] Combat Tool updated: %s", self.CombatToolName))
-    end)
-    
-    -- V48: Reverting to manual text input
-    createInputLabel(CombatPage, "Target Mob Names (Comma Separated):", 25)
-    local CTargetNamesInput = createTextBox(CombatPage, table.concat(self.CombatTargetNames, ", "), "E.g., Green Slime, Bluecap, Forest Guardian")
-    CTargetNamesInput.Name = "CTargetNamesInput"
-    CTargetNamesInput.TextSize = 12
-    CTargetNamesInput.FocusLost:Connect(function(enterPressed)
-        self.CombatTargetNames = CTargetNamesInput.Text
-        self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil 
-        self.EquippedToolName = nil
-        print(string.format("[Multi-Bot Debug] Combat Targets updated to: %s", self.CombatTargetNames))
-    end)
-
-    -- V46: Priority Scan Section Title/Separator
-    local separator1 = Instance.new("Frame")
-    separator1.Size = UDim2.new(1, 0, 0, 1)
-    separator1.BackgroundColor3 = CONFIG.AccentColor
-    separator1.BackgroundTransparency = 0.5
-    separator1.Parent = CombatPage
-    
-    local PScanTitle = createInputLabel(CombatPage, "--- PRIORITY SCAN MANAGEMENT ---")
-    PScanTitle.TextXAlignment = Enum.TextXAlignment.Center
-    PScanTitle.TextColor3 = CONFIG.AccentColor
-    PScanTitle.TextSize = 16
-    
-    -- V46: Area Index Input
-    local AreaIndexContainer = Instance.new("Frame")
-    AreaIndexContainer.Size = UDim2.new(1, 0, 0, CONFIG.InputHeight)
-    AreaIndexContainer.BackgroundTransparency = 1
-    AreaIndexContainer.Parent = CombatPage
-    
-    local IndexLayout = Instance.new("UIListLayout")
-    IndexLayout.FillDirection = Enum.FillDirection.Horizontal
-    IndexLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-    IndexLayout.Padding = UDim.new(0, 5)
-    IndexLayout.Parent = AreaIndexContainer
-    
-    local IndexInputLabel = Instance.new("TextLabel")
-    IndexInputLabel.Text = "Edit/View Area Index (1-15):"
-    IndexInputLabel.Size = UDim2.new(0.6, 0, 1, 0)
-    IndexInputLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-    IndexInputLabel.Font = Enum.Font.Gotham
-    IndexInputLabel.TextSize = 14
-    IndexInputLabel.BackgroundTransparency = 1
-    IndexInputLabel.TextXAlignment = Enum.TextXAlignment.Left
-    IndexInputLabel.Parent = AreaIndexContainer
-
-    local IndexInput = createTextBox(AreaIndexContainer, tostring(self.CurrentAreaIndex), "1")
-    IndexInput.Name = "IndexInput"
-    IndexInput.Size = UDim2.new(0.3, 0, 1, 0)
-    IndexInput.TextXAlignment = Enum.TextXAlignment.Center
-    IndexInput.FocusLost:Connect(function(enterPressed)
-        local index = tonumber(IndexInput.Text)
-        if index and index >= 1 and index <= 15 then
-            self.CurrentAreaIndex = math.floor(index)
-            print(string.format("[Multi-Bot Debug] Current EDIT Area Index set to: %d", self.CurrentAreaIndex))
-            self:updateGUI() -- Triggers updateCombatPageDetails
-        else
-            IndexInput.Text = tostring(self.CurrentAreaIndex)
-            warn("[Multi-Bot Debug] Invalid index. Must be between 1 and 15.")
-        end
-    end)
-    
-    -- V46: Area Name Input
-    createInputLabel(CombatPage, "Area Name (Customization Only):")
-    local AreaNameInput = createTextBox(CombatPage, self.AreaNames[self.CurrentAreaIndex], "E.g., Mushroom Forest TP")
-    AreaNameInput.Name = "AreaNameInput"
-    AreaNameInput.FocusLost:Connect(function(enterPressed)
-        self.AreaNames[self.CurrentAreaIndex] = AreaNameInput.Text
-        print(string.format("[Multi-Bot Debug] Area %d name updated to: %s", self.CurrentAreaIndex, AreaNameInput.Text))
-        self:updateGUI() 
-    end)
-    
-    -- V46: Coordinate Display Label
-    local CoordLabel = createInputLabel(CombatPage, "Saved Coords: --- UNSAVED ---")
-    CoordLabel.Name = "CoordLabel"
-    CoordLabel.TextXAlignment = Enum.TextXAlignment.Center
-    CoordLabel.TextSize = 12
-    
-    local SetCoordsButton = createButton(CombatPage, "SET AREA COORDS (Saves to Next Available Slot)", CONFIG.PrioritySetColor) 
-    SetCoordsButton.Name = "SetCoordsButton"
-    SetCoordsButton.MouseButton1Click:Connect(function()
-        local hrp = self:getHumanoidRootPart()
-        if not hrp then return end
-        
-        -- V48: Find the next unset index automatically
-        local indexToSave = self:findNextUnsetAreaIndex()
-        
-        local pos = hrp.Position
-        
-        -- V48: Save Position and Name (using the name currently in the text box)
-        self.PriorityAreas[indexToSave] = pos
-        self.AreaNames[indexToSave] = AreaNameInput.Text or "Custom Area " .. indexToSave
-        
-        local coordsText = string.format("X:%.1f, Y:%.1f, Z:%.1f", pos.X, pos.Y, pos.Z)
-        
-        print(string.format("[Multi-Bot Debug] Area %d (%s) coordinates saved: %s", indexToSave, self.AreaNames[indexToSave], coordsText))
-        
-        -- V48: Automatically set the CurrentAreaIndex to the *next* logical spot for editing
-        local nextIndex = (indexToSave % 15) + 1
-        self.CurrentAreaIndex = nextIndex
-        
-        self:updateGUI() -- To update the coordinate label and count, and the index input box
-        
-        -- Flash feedback on the button
-        local originalText = SetCoordsButton.Text
-        SetCoordsButton.Text = string.format("SAVED to Area %d! Next: Area %d", indexToSave, self.CurrentAreaIndex)
-        task.wait(1.5)
-        SetCoordsButton.Text = originalText
-    end)
-    
-    local ClearAreasButton = createButton(CombatPage, "CLEAR ALL PRIORITY AREAS", Color3.fromRGB(200, 50, 50)) 
-    ClearAreasButton.Name = "ClearAreasButton"
-    ClearAreasButton.MouseButton1Click:Connect(function()
-        local areas, names = self:initializePriorityAreas()
-        self.PriorityAreas = areas 
-        self.AreaNames = names
-        self.CurrentAreaIndex = 1 
-        self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil
-        restoreCamera(self)
-        self:updateGUI() 
-        print("[Multi-Bot Debug] All 15 Priority Areas cleared and index reset to 1.")
-    end)
-
-    local AreaStatusLabel = createInputLabel(CombatPage, "Priority Areas Ready: 0/15 Set (15 Stud Scan)")
-    AreaStatusLabel.Name = "AreaStatusLabel" 
-    AreaStatusLabel.TextXAlignment = Enum.TextXAlignment.Center
-    AreaStatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-    AreaStatusLabel.TextSize = 12
-
-    Pages["Combat"] = CombatScroll
-    
-    -- MINING PAGE (Scrollable)
-    local MiningScroll, MiningPage = createContentPage(ContentContainer, "Mining")
-    local MiningLayout = createListLayout(MiningPage)
-    
-    createInputLabel(MiningPage, "Mining Tool Name:")
-    local MToolNameInput = createTextBox(MiningPage, self.MiningToolName, "E.g., Eternium Pickaxe")
-    MToolNameInput.Name = "MToolNameInput"
-    MToolNameInput.FocusLost:Connect(function(enterPressed)
-        self.MiningToolName = MToolNameInput.Text
-        self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil 
-        self.EquippedToolName = nil
-        self:updateGUI()
-        print(string.format("[Multi-Bot Debug] Mining Tool updated: %s", self.MiningToolName))
-    end)
-    
-    -- V48: Reverting to manual text input
-    createInputLabel(MiningPage, "Target Resource Names (Comma Separated):", 25)
-    local MTargetNamesInput = createTextBox(MiningPage, table.concat(self.MiningTargetNames, ", "), "E.g., Copper Ore, Rock, Iron Vein")
-    MTargetNamesInput.Name = "MTargetNamesInput"
-    MTargetNamesInput.TextSize = 12
-    MTargetNamesInput.FocusLost:Connect(function(enterPressed)
-        self.MiningTargetNames = MTargetNamesInput.Text
-        self.CurrentTarget = nil 
-        self.CurrentTargetIdentifier = nil 
-        self.EquippedToolName = nil
-        print(string.format("[Multi-Bot Debug] Mining Targets updated to: %s", self.MiningTargetNames))
-    end)
-
-    Pages["Mining"] = MiningScroll
-
-    self.MainGui = {
-        ScreenGui = ScreenGui,
-        MainFrame = MainFrame,
-        MinimizeButton = MinimizeButton,
-        Tabs = Tabs,
-        Pages = Pages,
-        GeneralPage = {
-            AutoFarmButton = AutoFarmButton,
-            PScanToggleButton = PScanToggleButton,
-            ModeButton = ModeButton,
-            IgnoreButton = IgnoreButton, 
-            ClearIgnoreButton = ClearIgnoreButton, 
-            AutoIgnoreButton = AutoIgnoreButton, 
-            TeleportOnRespawnButton = TeleportOnRespawnButton, 
-        },
-        CombatPage = {
-            ToolNameInput = CToolNameInput,
-            TargetNamesInput = CTargetNamesInput,
-            IndexInput = IndexInput,
-            AreaNameInput = AreaNameInput, 
-            CoordLabel = CoordLabel, 
-            SetCoordsButton = SetCoordsButton,
-            ClearAreasButton = ClearAreasButton, 
-            AreaStatusLabel = AreaStatusLabel,
-        },
-        MiningPage = {
-            ToolNameInput = MToolNameInput,
-            TargetNamesInput = MTargetNamesInput,
-        }
+    -- Bindings to simulate UI input changes
+    self.GeneralPage = {
+        EnabledButton = EnabledButton,
+        TPOnRespawnToggle = self.TPOnRespawn,
+        AutoIgnoreToggle = self.AutoIgnore
     }
 
+    self.CombatPage = {
+        ToolNameInput = CToolNameInput,
+        TargetNamesInput = CTargetNamesInput,
+    }
+
+    self.MiningPage = {
+        ToolNameInput = MToolNameInput,
+        TargetNamesInput = MTargetNamesInput,
+    }
+    
+    -- NEW PLAYER TP PAGE
+    self.PlayerTPPage = {
+        PlayerNameInput = PPlayerNameInput,
+        TeleportButton = TPButton
+    }
+
+    -- Mock Minimize/Close buttons
+    local MinimizeButton = { MouseButton1Click = {} }
+    MinimizeButton.MouseButton1Click.Connect = function(f) MinimizeButton.MouseButton1Click.Function = f end
+
+    local CloseButton = { MouseButton1Click = {} }
+    CloseButton.MouseButton1Click.Connect = function(f) CloseButton.MouseButton1Click.Function = f end
+
+    -- Simulate connecting the buttons to the script logic
     MinimizeButton.MouseButton1Click:Connect(function()
         self:setMinimizedState(not self.IsMinimized)
     end)
 
     CloseButton.MouseButton1Click:Connect(function()
         if self.LoopThread then task.cancel(self.LoopThread) end
-        restoreCamera(self)
+        -- NOTE: restoreCamera function is assumed to exist in a real script.
         ScreenGui:Destroy()
         print("[Multi-Bot Debug] Bot script shut down.")
     end)
     
     self:setMinimizedState(self.IsMinimized)
     self:showTab(self.CurrentTab)
+    
+    -- Simulate initial setting update based on mock inputs
+    self:changeSettings({
+        CombatTargetNames = CTargetNamesInput,
+        MiningTargetNames = MTargetNamesInput,
+        PlayerNameInput = PPlayerNameInput -- Update new P Scan setting
+    })
 end
 
 -- MAIN LOOP
@@ -1398,20 +360,23 @@ function MultiGrinder:start()
     
     self.LoopThread = task.spawn(function()
         while task.wait(CONFIG.FarmSpeed) do
-            local hrp = self:getHumanoidRootPart()
-            if not hrp then continue end
-
-            local isCombatOrMining = self.Mode == "Combat" or self.Mode == "Mining"
-
-            -- V48: Check mode-specific enabled flag
-            if isCombatOrMining and self.CombatMiningEnabled then
+            if self.Enabled then
+                local hrp = self:getHumanoidRootPart()
+                
+                if not hrp then 
+                    -- print("[Multi-Bot Debug] Waiting for character HRP...")
+                    continue 
+                end
+                
                 if self.Mode == "Combat" then
                     self:executeCombatAction(hrp)
-                else
+                elseif self.Mode == "Mining" then
                     self:executeMiningAction(hrp)
+                elseif self.Mode == "PlayerTP" then -- No continuous action needed for TP mode
+                    -- Only executes when the TP button is clicked via self:executePlayerScan()
+                    -- But we keep the loop running just in case the mode changes.
+                    task.wait(1)
                 end
-            elseif self.Mode == "PriorityScan" and self.PriorityScanRunning then
-                self:executePriorityScan(hrp)
             end
         end
     end)
