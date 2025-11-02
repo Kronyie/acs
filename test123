@@ -1,14 +1,13 @@
 --[[
-  Refactored Multi-Bot (V49 - Server Crash Fix)
+  Refactored Multi-Bot (V50 - Server Crash Fix V2)
 
-  *** V49 CRITICAL FIX: Server-Side MobManager Crash ***
+  *** V50 CRITICAL FIX: Server-Side MobManager Crash (V2) ***
   - RESOLVED: 'attempt to index nil with 'Parent'' error from the server's MobManager script.
-  - CAUSE: The client was sending an attack request for a target that was destroyed (nil) on the server, causing the server script to crash.
-  - FIX: Added a final, immediate validity check on the 'target' instance (using isTargetValid) *right before* firing the 'UseItem' remote event. If the target is invalid at that exact moment, the attack is aborted.
-
-  *** V48 FIXES RETAINED ***
-  - V48 'attempt to index nil with 'Position'' fixed by checking target immediately before teleport.
-  - V47 Priority Zone logic is retained.
+  - CAUSE: The V49 fix wasn't robust enough to handle fast race conditions where the mob died immediately after client teleport.
+  - FIX: 
+    1. **Hardened isTargetValid:** Added a check to ensure the target's main parent is still the Workspace (or nil if it's not parented anymore), which is a much stronger check for a destroyed object.
+    2. **Guaranteed Target Part:** Ensured CurrentTarget is a BasePart before running the attack sequence.
+    3. **Atomic Check:** Moved the final validity check immediately before the 'UseItem' remote fire, minimizing the race condition window to the absolute limit of what the client can control.
 --]]
 
 local Players = game:GetService("Players")
@@ -26,7 +25,7 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V49 - Server Crash Fix)", 
+    ScriptName = "Studlands (V50 - Server Crash Fix V2)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.25, -- 4 times per second (Adjust this lower if you want faster action, but it will increase lag)
     
@@ -216,18 +215,39 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
--- V46 Helper function for robust target validity check
+-- V50: Hardened Helper function for robust target validity check
 local function isTargetValid(targetPart)
-    -- Check if targetPart exists, is a BasePart, and has a Parent.
+    -- Check 1: Exists, is a BasePart, and has a Parent (basic existence)
     if not targetPart or not targetPart:IsA("BasePart") or not targetPart.Parent then
         return false
     end
-    -- Check if the parent model has a living Humanoid (for combat, check health)
+    
+    -- Check 2: Strong check for the parent chain up to Workspace (ensures it wasn't destroyed)
+    local rootParent = targetPart.Parent
+    while rootParent.Parent do
+        if rootParent.Parent == Workspace then
+            break -- Found the Workspace link, it's alive
+        end
+        rootParent = rootParent.Parent
+        if rootParent == game then -- Hit the root, but not Workspace. Something is wrong.
+            return false 
+        end
+        if rootParent:IsA("DataModel") then -- Hit game, but not Workspace. Something is wrong.
+            return false
+        end
+    end
+    if rootParent ~= Workspace and rootParent:IsA("Model") and rootParent.Parent ~= Workspace then
+        -- This covers cases where target.Parent is a Model but it's not in the Workspace
+        return false 
+    end
+
+    -- Check 3: Check if the parent model has a living Humanoid (for combat, check health)
     local humanoid = targetPart.Parent:FindFirstChildOfClass("Humanoid")
     if humanoid then
         return humanoid.Health > 0
     end
-    -- For non-humanoid targets (like resources/rocks), just check existence
+    
+    -- Check 4: For non-humanoid targets (like resources/rocks), just check existence
     return true
 end
 
@@ -258,7 +278,7 @@ local function findLocalTarget(centerPos, radius, normalTargetNames, ignoredTarg
             end
             
             -- V48: CRITICAL FIX: Ensure the target part still exists and has a position
-            if not targetPart or not targetPart.Position then
+            if not isTargetValid(targetPart) or not targetPart.Position then
                 continue
             end
 
@@ -309,7 +329,7 @@ function MultiGrinder:findBestCombatTarget(hrp, normalTargetNames)
             if targetKey == LocalPlayer.Character then continue end
             if self.IgnoredTargets[targetKey] then continue end
             
-            if not targetPart or not targetPart.Position then continue end
+            if not isTargetValid(targetPart) or not targetPart.Position then continue end
             
             local distFromPlayer = (targetPart.Position - playerPos).Magnitude
             
@@ -361,16 +381,26 @@ end
 
 -- simulateAction function
 
-function MultiGrinder:simulateAction(toolName)
+function MultiGrinder:simulateAction(toolName, targetPart)
     local char = LocalPlayer.Character
     local remotes = self.Remotes
     
     if not char or not remotes.UseItem then return end
+    
+    -- V50: CRITICAL FINAL CHECK (The last possible moment)
+    if not isTargetValid(targetPart) then
+        warn("[Multi-Bot Debug] V50 Atomic Check FAILED: Target is invalid right before remote fire. ABORTING.")
+        self.CurrentTarget = nil
+        self.CurrentTargetIdentifier = nil
+        restoreCamera(self)
+        self:updateGUI()
+        return 
+    end
 
     local toolInstance = char:FindFirstChild(toolName) or LocalPlayer.Backpack:FindFirstChild(toolName)
 
     if toolInstance then
-        -- V49: This is the fire that the server is crashing on. The check must be done before this.
+        -- This is the point of the crash. If targetPart is guaranteed valid, the server should not crash.
         remotes.UseItem:FireServer(toolInstance, false)
     else
         warn(string.format("[Multi-Bot Debug] CRITICAL FAILURE: Tool Instance (%s) not found in Character OR Backpack. Check tool name configuration.", toolName))
@@ -384,16 +414,16 @@ local function restoreCamera(self)
     end
 end
 
--- V49: REFACTORED executeCombatAction (Final Check before remote fire)
+-- V50: REFACTORED executeCombatAction
 function MultiGrinder:executeCombatAction(hrp)
     local toolName = self.CombatToolName
     local remotes = self.Remotes
     local targetNames = self:getTargetNames("Combat")
     local numZones = #self.PriorityZones
 
-    -- 1. --- CHECK CURRENT TARGET (If invalid, reset) ---
+    -- 1. --- CHECK AND VALIDATE CURRENT TARGET (If invalid, reset) ---
     local currentTarget = self.CurrentTarget
-    if not isTargetValid(currentTarget) then
+    if not isTargetValid(currentTarget) or not currentTarget:IsA("BasePart") then -- V50: Check for BasePart type
         currentTarget = nil 
         self.CurrentTarget = nil 
     end
@@ -407,21 +437,19 @@ function MultiGrinder:executeCombatAction(hrp)
     if numZones > 0 then
         local zoneFound = false
         
-        -- Start loop from current index (or reset to 1 if out of bounds)
         if self.CurrentZoneIndex > numZones then
             self.CurrentZoneIndex = 1
         end
 
         for i = self.CurrentZoneIndex, numZones do
             local zonePos = self.PriorityZones[i]
-            local targetPos = zonePos + Vector3.new(0, 5, 0) -- Teleport slightly above the ground/zone position
+            local targetPos = zonePos + Vector3.new(0, 5, 0) 
             
             print(string.format("[Multi-Bot Debug] HUNTING Zone %d/%d: Teleporting to %s", i, numZones, tostring(zonePos)))
 
             -- TELEPORT TO ZONE
             hrp.CFrame = CFrame.new(targetPos) 
             
-            -- Wait for mobs to register/spawn/lag to clear
             task.wait(CONFIG.PriorityZoneTeleportDelay)
             
             -- SEARCH LOCALLY
@@ -444,14 +472,12 @@ function MultiGrinder:executeCombatAction(hrp)
                 goto AttackSequence 
             end
             
-            -- If not found, move to the next zone in the next loop cycle
             self.CurrentZoneIndex = i + 1 
         end
         
-        -- If we finished the loop without finding a target
         if not zoneFound then
             print("[Multi-Bot Debug] All Priority Zones checked. Falling back to map-wide search.")
-            self.CurrentZoneIndex = 1 -- Reset for the next time we enter this block
+            self.CurrentZoneIndex = 1 
         end
     end
     
@@ -459,7 +485,6 @@ function MultiGrinder:executeCombatAction(hrp)
     local newTargetPart, newTargetKey = self:findBestCombatTarget(hrp, targetNames)
 
     if newTargetPart then
-        -- A normal map-wide target was found
         if currentTarget ~= newTargetPart then
             print(string.format("[Multi-Bot Debug] NORMAL FALLBACK TARGET ACQUIRED: %s", newTargetKey.Name))
             self.CurrentTarget = newTargetPart
@@ -468,16 +493,14 @@ function MultiGrinder:executeCombatAction(hrp)
             self:updateGUI()
         end
     else
-        -- No targets were found at all
         if currentTarget then
-            -- We had a target, but now there are none. Clear it.
             self.CurrentTarget = nil
             self.CurrentTargetIdentifier = nil
             self.TargetAcquiredTime = nil
             restoreCamera(self)
             self:updateGUI()
         end
-        return false -- Stop execution, no targets
+        return false 
     end
 
     -- 3. --- AUTO-IGNORE LOGIC (Applies to our current target) ---
@@ -485,12 +508,13 @@ function MultiGrinder:executeCombatAction(hrp)
     
     local target = self.CurrentTarget 
 
-    if not target then
-        restoreCamera(self)
-        self:updateGUI()
-        return false
+    -- V50: This check is now critical after finding/setting a target
+    if not target or not target:IsA("BasePart") then
+         warn("[Multi-Bot Debug] Target is nil or not a BasePart (after acquisition). Aborting attack.")
+         self.CurrentTarget = nil
+         return false
     end
-    
+
     if self.AutoIgnoreEnabled and self.TargetAcquiredTime and (os.clock() - self.TargetAcquiredTime > 10) then
         
         if isTargetValid(target) then
@@ -538,16 +562,16 @@ function MultiGrinder:executeCombatAction(hrp)
     
     -- 6. --- TELEPORT AND CAMERA ---
     
-    -- *** CRITICAL V48 CHECK 1: Target instance validity ***
-    if not target or not target:IsA("BasePart") then
-         warn("[Multi-Bot Debug] V48: Target is nil or invalid BasePart before teleport. Aborting attack.")
+    -- Check 1: Target instance validity (Redundant but safe)
+    if not isTargetValid(target) then
+         warn("[Multi-Bot Debug] Target invalidated before teleport. Re-acquiring next loop.")
          self.CurrentTarget = nil
          return false
     end
     
     local offset = CONFIG.Combat.TeleportOffset
     
-    -- *** CRITICAL V48 CHECK 2: Position existence ***
+    -- Check 2: Position existence
     if not target.Position then 
         warn("[Multi-Bot Debug] Target lost position mid-attack. Re-acquiring next loop.")
         self.CurrentTarget = nil
@@ -570,19 +594,8 @@ function MultiGrinder:executeCombatAction(hrp)
         return false
     end
     
-    -- 7. --- SIMULATE ACTION (V49: Final check before remote fire) ---
-    
-    -- *** CRITICAL V49 CHECK: Target validity just before hitting the server ***
-    if not isTargetValid(target) then
-        warn("[Multi-Bot Debug] V49: Target destroyed after teleport. Aborting remote fire to prevent Server Crash.")
-        self.CurrentTarget = nil
-        self.CurrentTargetIdentifier = nil
-        restoreCamera(self)
-        self:updateGUI()
-        return false 
-    end
-
-    self:simulateAction(toolName)
+    -- 7. --- SIMULATE ACTION (Pass the target to the function for the atomic check) ---
+    self:simulateAction(toolName, target)
 
     return true
 end
@@ -596,7 +609,7 @@ function MultiGrinder:executeMiningAction(hrp)
     local currentTarget = self.CurrentTarget
     local currentTargetIsValid = isTargetValid(currentTarget)
 
-    if not currentTargetIsValid then
+    if not currentTargetIsValid or not currentTarget:IsA("BasePart") then
         currentTarget = nil 
         self.CurrentTarget = nil
     end
@@ -644,16 +657,16 @@ function MultiGrinder:executeMiningAction(hrp)
     
     local resource = self.CurrentTarget
     
-    -- *** CRITICAL V48 CHECK 1: Target instance validity ***
+    -- V50: Mandatory target check after acquisition
     if not resource or not resource:IsA("BasePart") then
-         warn("[Multi-Bot Debug] V48: Resource is nil or invalid BasePart before teleport. Aborting mining.")
+         warn("[Multi-Bot Debug] Resource is nil or invalid BasePart. Aborting mining.")
          self.CurrentTarget = nil
          return false
     end
     
     local offset = CONFIG.Mining.TeleportOffset
     
-    -- *** CRITICAL V48 CHECK 2: Position existence ***
+    -- Check 2: Position existence
     if not resource.Position then 
         warn("[Multi-Bot Debug] Resource lost position mid-attack. Re-acquiring next loop.")
         self.CurrentTarget = nil
@@ -671,18 +684,8 @@ function MultiGrinder:executeMiningAction(hrp)
         local resourceCFrame = CFrame.new(resource.Position)
         Camera.CFrame = CFrame.new(resourceCFrame.p + (resourceCFrame.LookVector * -5) + Vector3.new(0, 2, 0), resourceCFrame.p)
         
-        -- *** CRITICAL V49 CHECK: Target validity just before hitting the server ***
-        -- For mining, we only check for existence (Parent)
-        if not isTargetValid(resource) then
-            warn("[Multi-Bot Debug] V49: Resource destroyed after teleport. Aborting remote fire to prevent Server Crash.")
-            self.CurrentTarget = nil
-            self.CurrentTargetIdentifier = nil
-            restoreCamera(self)
-            self:updateGUI()
-            return false 
-        end
-
-        self:simulateAction(toolName)
+        -- V50: SIMULATE ACTION (Pass the target to the function for the atomic check)
+        self:simulateAction(toolName, resource)
     else
         warn("[Multi-Bot Debug] Resource or Camera was invalid during mining sequence.")
         restoreCamera(self) 
@@ -691,7 +694,7 @@ function MultiGrinder:executeMiningAction(hrp)
     return true
 end
 
--- GUI LOGIC & COMPONENTS
+-- GUI LOGIC & COMPONENTS (No changes in V50)
 
 function MultiGrinder:setMinimizedState(isMinimized)
     self.IsMinimized = isMinimized
