@@ -1,5 +1,17 @@
 --[[
-  Refactored Multi-Bot (V44 - TP on Respawn)
+  Refactored Multi-Bot (V45 - Priority Scan - Clear Areas)
+
+  *** V45 UPDATE: Clear Areas Button ***
+  - Added "CLEAR ALL AREAS" button to the Combat tab to instantly clear all 15 saved priority coordinates and reset the index to 1.
+
+  *** V45 UPDATE: Scan Radius ***
+  - The PriorityScan mode's **SearchRadius** is set to **15 studs**.
+  
+  *** V45 NEW FEATURE ***
+  - Added "PriorityScan" mode. This mode cycles through 1-15 user-defined coordinates (in order).
+  - At each set coordinate, the bot teleports, scans a **15-stud radius** for Combat targets, kills the target, and then moves to the next area when clear.
+  - Added controls to the Combat tab to set and manage the 15 priority areas.
+  - The main mode toggle now cycles: Combat (Full Map) -> Mining -> Priority Scan.
 
   *** V44 NEW FEATURE ***
   - Added "TP on Respawn: ON/OFF" toggle button to the General tab (ON by default).
@@ -34,7 +46,7 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V44)", 
+    ScriptName = "Studlands (V45)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.25, -- EDITED: Was 0.05 (20x/sec). Changed to 0.25 (4x/sec) to reduce lag.
     
@@ -98,6 +110,15 @@ local function getRemotes()
     return remotes
 end
 
+-- V45: Helper method to initialize 15 priority area slots
+function MultiGrinder:initializePriorityAreas()
+    local areas = {}
+    for i = 1, 15 do
+        areas[i] = nil -- Stored as Vector3 objects (nil if unset)
+    end
+    return areas
+end
+
 -- CONSTRUCTOR & STATE
 
 function MultiGrinder:new()
@@ -129,6 +150,11 @@ function MultiGrinder:new()
         LastKnownPosition = nil,
         TeleportOnRespawnEnabled = true,
 
+        -- NEW (V45): Priority Scan State
+        PriorityAreas = self:initializePriorityAreas(), -- Initialize 15 empty slots (nil)
+        CurrentAreaIndex = 1, -- Cycles 1-15
+        SearchRadius = 15, -- UPDATED: Radius for scanning area in PriorityScan mode (15 studs)
+        
         -- Persistent GUI State
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
         IsMinimized = false,
@@ -183,7 +209,7 @@ function MultiGrinder:getHumanoidRootPart()
 end
 
 function MultiGrinder:getTargetNames(mode)
-    local targetString = (mode == "Combat") and self.CombatTargetNames or self.MiningTargetNames
+    local targetString = (mode == "Combat" or mode == "PriorityScan") and self.CombatTargetNames or self.MiningTargetNames
     local names = {}
     for name in string.gmatch(targetString, "[^,]+") do
         local trimmedName = name:gsub("^%s*(.-)%s*$", "%1")
@@ -192,12 +218,12 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
--- V41/V43: Returns two values: targetPart (HRP/Resource) and targetKey (Model/Resource)
-function MultiGrinder:findClosestTarget(position, names)
-    local closestTargetPart = nil -- The Part we teleport to (HRP or Resource Part)
+-- V41/V43/V45: Returns two values: targetPart (HRP/Resource) and targetKey (Model/Resource). Now accepts searchRadius.
+function MultiGrinder:findClosestTarget(position, names, searchRadius)
+    local closestTargetPart = nil -- The Part we teleport to (HRP/Resource Part)
     local closestTargetKey = nil -- The Model/Part instance used for persistent ignore
     local minDistance = math.huge
-    local searchRadius = math.huge 
+    local searchRadius = searchRadius or math.huge -- Use provided radius or default to infinite
 
     for _, obj in ipairs(Workspace:GetDescendants()) do
         for _, name in ipairs(names) do
@@ -269,6 +295,17 @@ local function restoreCamera(self)
     end
 end
 
+-- V45: Helper to count set areas
+function MultiGrinder:getSetAreaCount()
+    local count = 0
+    for _, pos in ipairs(self.PriorityAreas) do
+        if pos ~= nil then
+            count = count + 1
+        end
+    end
+    return count
+end
+
 function MultiGrinder:executeCombatAction(hrp)
     local toolName = self.CombatToolName
     local remotes = self.Remotes
@@ -280,8 +317,8 @@ function MultiGrinder:executeCombatAction(hrp)
     if needsNewTarget then
         local targetNames = self:getTargetNames("Combat")
         
-        -- V41 CHANGE: Receive both values
-        local newTarget, newTargetKey = self:findClosestTarget(hrp.Position, targetNames)
+        -- V41/V45 CHANGE: findClosestTarget now accepts searchRadius (nil for full map)
+        local newTarget, newTargetKey = self:findClosestTarget(hrp.Position, targetNames, nil)
         
         if not newTarget then 
             self.CurrentTarget = nil 
@@ -368,6 +405,138 @@ function MultiGrinder:executeCombatAction(hrp)
     return true
 end
 
+-- V45: New function for Priority Scan execution
+function MultiGrinder:executePriorityScan(hrp)
+    local toolName = self.CombatToolName
+    local remotes = self.Remotes
+    local target = self.CurrentTarget
+    local targetNames = self:getTargetNames("PriorityScan")
+    
+    local currentAreaPos = self.PriorityAreas[self.CurrentAreaIndex]
+    
+    -- 1. Check if the current area is valid. If not, skip to the next.
+    if not currentAreaPos then
+        print(string.format("[Multi-Bot Debug] Area %d is not set. Skipping to next.", self.CurrentAreaIndex))
+        self.CurrentAreaIndex = (self.CurrentAreaIndex % 15) + 1 -- Cycle to the next index (1->2, 15->1)
+        self.CurrentTarget = nil
+        self.CurrentTargetIdentifier = nil
+        self.TargetAcquiredTime = nil
+        restoreCamera(self)
+        self:updateGUI() 
+        return false
+    end
+    
+    -- 2. Handle Mob Search/Fight/Cleanup
+    local needsNewTarget = not target or not target.Parent or not target.Parent:FindFirstChildOfClass("Humanoid") or target.Parent:FindFirstChildOfClass("Humanoid").Health <= 0
+
+    if needsNewTarget then
+        
+        -- Teleport to the area if far away (or first time)
+        local currentAreaVector = Vector3.new(currentAreaPos.X, hrp.Position.Y, currentAreaPos.Z) -- Preserve Y for safe ground teleport
+        local areaDistance = (hrp.Position - currentAreaVector).Magnitude
+        
+        if areaDistance > 10 then 
+            
+            local tpPos = currentAreaPos + Vector3.new(0, 5, 0) -- Teleport slightly above the ground/area
+            
+            self.LastKnownPosition = hrp.Position -- Store last position before teleporting
+            
+            hrp.CFrame = CFrame.new(tpPos)
+            print(string.format("[Multi-Bot Debug] Priority Scan: Teleporting to Area %d.", self.CurrentAreaIndex))
+            task.wait(0.5) -- Wait for physics to settle
+        end
+        
+        -- Search for targets ONLY within the defined radius
+        local newTarget, newTargetKey = self:findClosestTarget(hrp.Position, targetNames, self.SearchRadius) -- Pass radius
+        
+        if not newTarget then 
+            -- No target found in this area. Move to the next area.
+            print(string.format("[Multi-Bot Debug] Priority Scan: Area %d clear. Moving to next area.", self.CurrentAreaIndex))
+            self.CurrentAreaIndex = (self.CurrentAreaIndex % 15) + 1 -- Move to next
+            self.CurrentTarget = nil 
+            self.CurrentTargetIdentifier = nil 
+            self.TargetAcquiredTime = nil 
+            restoreCamera(self) 
+            self:updateGUI() 
+            return false 
+        end
+        
+        -- Target found! Set it up for attack
+        self.CurrentTarget = newTarget
+        self.CurrentTargetIdentifier = newTargetKey 
+        target = self.CurrentTarget
+        self.TargetAcquiredTime = os.clock() 
+        self:updateGUI() 
+    end
+    
+    -- 3. Execute Attack Logic 
+    
+    -- V42: Auto-ignore target if alive for too long (only for Combat targets)
+    if self.AutoIgnoreEnabled and target and self.TargetAcquiredTime and (os.clock() - self.TargetAcquiredTime > 10) then
+        local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Health > 0 then
+            local targetName = target.Parent and target.Parent.Name or target.Name
+            print(string.format("[Multi-Bot Debug] Target %s alive for > 10s in Area Scan. Auto-ignoring.", targetName))
+            
+            if self.CurrentTargetIdentifier then
+                self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+            end
+            
+            self.CurrentTarget = nil 
+            self.CurrentTargetIdentifier = nil
+            self.TargetAcquiredTime = nil
+            restoreCamera(self)
+            self:updateGUI()
+            return false -- Force a re-run to search for a new mob in the same area
+        else
+            self.TargetAcquiredTime = nil
+        end
+    end
+    
+    -- 4. Equip and Attack
+    
+    local char = LocalPlayer.Character
+    if not char then return false end
+    
+    local equippedTool = char:FindFirstChild(toolName)
+    if not equippedTool and remotes.EquipItem then
+        -- Equip logic (same as combat)
+        print(string.format("[Multi-Bot Debug] Equipping tool: %s", toolName))
+        remotes.EquipItem:InvokeServer(toolName)
+        equippedTool = char:WaitForChild(toolName, 1.0)
+        if equippedTool then
+            self.EquippedToolName = toolName 
+        else
+            warn(string.format("[Multi-Bot Debug] Equip FAILED in Priority Scan: %s", toolName))
+            self.EquippedToolName = nil 
+            return false 
+        end
+    end
+    
+    local offset = CONFIG.Combat.TeleportOffset
+    local targetPos = target.Position + offset
+    
+    self.LastKnownPosition = hrp.Position -- Store last position before teleporting
+    
+    hrp.CFrame = CFrame.new(targetPos)
+    
+    if Camera and target and target.Position then 
+        if not self.OriginalCameraCFrame then
+            self.OriginalCameraCFrame = Camera.CFrame 
+        end
+        
+        local targetCFrame = CFrame.new(target.Position)
+        Camera.CFrame = CFrame.new(targetCFrame.p + (targetCFrame.LookVector * -5) + Vector3.new(0, 2, 0), targetCFrame.p)
+
+        self:simulateAction(toolName)
+    else
+        warn("[Multi-Bot Debug] Target or Camera was invalid during attack sequence in Priority Scan.")
+        restoreCamera(self) 
+    end
+
+    return true
+end
+
 function MultiGrinder:executeMiningAction(hrp)
     local toolName = self.MiningToolName
     local remotes = self.Remotes
@@ -379,8 +548,8 @@ function MultiGrinder:executeMiningAction(hrp)
     if needsNewTarget then
         local targetNames = self:getTargetNames("Mining")
         
-        -- V41 CHANGE: Receive both values
-        local newResource, newResourceKey = self:findClosestTarget(hrp.Position, targetNames)
+        -- V41/V45 CHANGE: findClosestTarget now accepts searchRadius (nil for full map)
+        local newResource, newResourceKey = self:findClosestTarget(hrp.Position, targetNames, nil)
         
         if not newResource then 
             self.CurrentTarget = nil
@@ -476,7 +645,7 @@ function MultiGrinder:updateGUI()
     local modeButton = self.MainGui.GeneralPage.ModeButton
     local ignoreButton = self.MainGui.GeneralPage.IgnoreButton 
     local autoIgnoreButton = self.MainGui.GeneralPage.AutoIgnoreButton 
-    local tpRespawnButton = self.MainGui.GeneralPage.TeleportOnRespawnButton -- NEW (V44)
+    local tpRespawnButton = self.MainGui.GeneralPage.TeleportOnRespawnButton 
     
     if self.Enabled then
         toggleButton.Text = "ON"
@@ -522,9 +691,26 @@ function MultiGrinder:updateGUI()
         tpRespawnButton.BackgroundColor3 = CONFIG.ToggleOffColor
     end
 
-    local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
-    local modeDisplayName = (self.Mode == "Combat") and "Attacking" or "Mining"
+    -- V45: Update Mode button text
+    local modeDisplayName
+    if self.Mode == "Combat" then
+        modeDisplayName = "Attacking (Full Map)"
+    elseif self.Mode == "Mining" then
+        modeDisplayName = "Mining"
+    else -- PriorityScan
+        modeDisplayName = "Priority Scan (" .. self.CurrentAreaIndex .. "/15)"
+    end
+
+    local currentToolName = (self.Mode == "Mining") and self.MiningToolName or self.CombatToolName -- Use combat tool for both combat modes
     modeButton.Text = modeDisplayName .. " ("..currentToolName..")"
+
+    -- V45: Update Area Status Label
+    local combatPage = self.MainGui.Pages["Combat"]
+    local statusLabel = combatPage:FindFirstChild("AreaStatusLabel")
+    if statusLabel then
+        local count = self:getSetAreaCount()
+        statusLabel.Text = string.format("Priority Areas Ready: %d/15 Set (15 Stud Scan)", count)
+    end
     
     for tabName, tabButton in pairs(self.MainGui.Tabs) do
         if tabName == self.CurrentTab then
@@ -777,7 +963,7 @@ function MultiGrinder:setupGUI()
         if not self.Enabled then
             restoreCamera(self) 
         else
-            -- NEW (V44): Store position when enabling
+            -- NEW (V44/V45): Store position when enabling
             local hrp = self:getHumanoidRootPart()
             if hrp then
                 self.LastKnownPosition = hrp.Position
@@ -788,14 +974,22 @@ function MultiGrinder:setupGUI()
     end)
 
     local initialModeText
-    local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
-    local modeDisplayName = (self.Mode == "Combat") and "Attacking" or "Mining"
+    local currentToolName = (self.Mode == "Mining") and self.MiningToolName or self.CombatToolName
+    local modeDisplayName = (self.Mode == "Combat") and "Attacking (Full Map)" or "Mining"
     initialModeText = modeDisplayName .. " ("..currentToolName..")"
     
     local ModeButton = createButton(GeneralPage, initialModeText, CONFIG.AccentColor)
     ModeButton.Name = "ModeButton"
     ModeButton.MouseButton1Click:Connect(function()
-        self.Mode = (self.Mode == "Combat" and "Mining" or "Combat")
+        -- V45: Three-state mode switch
+        if self.Mode == "Combat" then
+            self.Mode = "Mining"
+        elseif self.Mode == "Mining" then
+            self.Mode = "PriorityScan"
+        elseif self.Mode == "PriorityScan" then
+            self.Mode = "Combat"
+        end
+        
         self.CurrentTarget = nil 
         self.CurrentTargetIdentifier = nil -- V40
         self.EquippedToolName = nil
@@ -892,12 +1086,119 @@ function MultiGrinder:setupGUI()
     end)
     
     local CRangeLabel = Instance.new("TextLabel")
-    CRangeLabel.Text = "Search Range: Full Map (Continuous Attack)"
-    CRangeColor = Color3.fromRGB(150, 150, 150)
+    CRangeLabel.Text = "Search Range (Full Map for Standard Mode)"
+    CRangeLabel.Size = UDim2.new(1, 0, 0, 20)
+    CRangeLabel.BackgroundTransparency = 1
+    CRangeLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
     CRangeLabel.Font = Enum.Font.Gotham
     CRangeLabel.TextSize = 12
     CRangeLabel.TextXAlignment = Enum.TextXAlignment.Center
     CRangeLabel.Parent = CombatPage
+
+    
+    -- V45: Priority Scan Controls
+    local separator = Instance.new("Frame")
+    separator.Size = UDim2.new(1, 0, 0, 1)
+    separator.BackgroundColor3 = CONFIG.AccentColor
+    separator.BackgroundTransparency = 0.5
+    separator.Parent = CombatPage
+    
+    createInputLabel(CombatPage, "--- Priority Area Scan (1-15) ---")
+    
+    local AreaIndexContainer = Instance.new("Frame")
+    AreaIndexContainer.Size = UDim2.new(0.9, 0, 0, CONFIG.InputHeight)
+    AreaIndexContainer.BackgroundTransparency = 1
+    AreaIndexContainer.Parent = CombatPage
+    
+    local IndexLayout = Instance.new("UIListLayout")
+    IndexLayout.FillDirection = Enum.FillDirection.Horizontal
+    IndexLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    IndexLayout.Parent = AreaIndexContainer
+    
+    local IndexInputLabel = Instance.new("TextLabel")
+    IndexInputLabel.Text = "Area Index (1-15):"
+    IndexInputLabel.Size = UDim2.new(0.4, 0, 1, 0)
+    IndexInputLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    IndexInputLabel.Font = Enum.Font.Gotham
+    IndexInputLabel.TextSize = 14
+    IndexInputLabel.BackgroundTransparency = 1
+    IndexInputLabel.TextXAlignment = Enum.TextXAlignment.Left
+    IndexInputLabel.Parent = AreaIndexContainer
+
+    local IndexInput = createTextBox(AreaIndexContainer, tostring(self.CurrentAreaIndex), "1")
+    IndexInput.Name = "IndexInput"
+    IndexInput.Size = UDim2.new(0.5, 0, 1, 0)
+    IndexInput.TextXAlignment = Enum.TextXAlignment.Center
+    IndexInput.FocusLost:Connect(function(enterPressed)
+        local index = tonumber(IndexInput.Text)
+        if index and index >= 1 and index <= 15 then
+            self.CurrentAreaIndex = math.floor(index)
+            print(string.format("[Multi-Bot Debug] Current Area Index set to: %d", self.CurrentAreaIndex))
+            self:updateGUI() 
+        else
+            IndexInput.Text = tostring(self.CurrentAreaIndex)
+            warn("[Multi-Bot Debug] Invalid index. Must be between 1 and 15.")
+        end
+    end)
+    
+    local SetCoordsButton = createButton(CombatPage, "SET AREA COORDS", Color3.fromRGB(0, 140, 255)) -- Blue
+    SetCoordsButton.Name = "SetCoordsButton"
+    SetCoordsButton.Size = UDim2.new(0.9, 0, 0, CONFIG.ButtonHeight) 
+    SetCoordsButton.MouseButton1Click:Connect(function()
+        local hrp = self:getHumanoidRootPart()
+        if not hrp then return end
+        
+        local index = self.CurrentAreaIndex
+        local pos = hrp.Position
+        self.PriorityAreas[index] = pos
+        
+        local statusLabel = SetCoordsButton:FindFirstChild("StatusLabel") or Instance.new("TextLabel")
+        statusLabel.Name = "StatusLabel"
+        statusLabel.Size = UDim2.new(1, 0, 0.4, 0)
+        statusLabel.Position = UDim2.new(0, 0, 0.5, 0)
+        statusLabel.Text = string.format("Area %d SAVED: (%.1f, %.1f, %.1f)", index, pos.X, pos.Y, pos.Z)
+        statusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        statusLabel.Font = Enum.Font.Gotham
+        statusLabel.TextSize = 10
+        statusLabel.BackgroundTransparency = 1
+        statusLabel.Parent = SetCoordsButton
+        
+        SetCoordsButton.Text = "SET AREA COORDS" -- Main text reset
+        SetCoordsButton.TextYAlignment = Enum.TextYAlignment.Top
+        
+        print(string.format("[Multi-Bot Debug] Area %d coordinates saved: %s", index, pos))
+        self:updateGUI() -- To update the count label
+        
+        task.wait(2)
+        statusLabel:Destroy()
+        SetCoordsButton.TextYAlignment = Enum.TextYAlignment.Center
+    end)
+    
+    -- NEW (V45): Clear All Priority Areas Button
+    local ClearAreasButton = createButton(CombatPage, "CLEAR ALL AREAS", Color3.fromRGB(200, 50, 50)) -- Reddish
+    ClearAreasButton.Name = "ClearAreasButton"
+    ClearAreasButton.Size = UDim2.new(0.9, 0, 0, CONFIG.ButtonHeight) 
+    ClearAreasButton.MouseButton1Click:Connect(function()
+        self.PriorityAreas = self:initializePriorityAreas() -- Reset all areas to nil
+        self.CurrentAreaIndex = 1 -- Reset index to 1
+        self.CurrentTarget = nil 
+        self.CurrentTargetIdentifier = nil
+        restoreCamera(self)
+        self:updateGUI() -- To update the count label and mode button
+        print("[Multi-Bot Debug] All 15 Priority Areas cleared and index reset to 1.")
+    end)
+
+    -- Status Label
+    local AreaStatusLabel = Instance.new("TextLabel")
+    AreaStatusLabel.Name = "AreaStatusLabel" -- Used for updating in updateGUI
+    AreaStatusLabel.Text = "Priority Areas Ready: 0/15 Set (15 Stud Scan)"
+    AreaStatusLabel.Size = UDim2.new(1, 0, 0, 20)
+    AreaStatusLabel.BackgroundTransparency = 1
+    AreaStatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+    AreaStatusLabel.Font = Enum.Font.Gotham
+    AreaStatusLabel.TextSize = 12
+    AreaStatusLabel.TextXAlignment = Enum.TextXAlignment.Center
+    AreaStatusLabel.Parent = CombatPage
 
     Pages["Combat"] = CombatPage
     
@@ -962,11 +1263,15 @@ function MultiGrinder:setupGUI()
             IgnoreButton = IgnoreButton, 
             ClearIgnoreButton = ClearIgnoreButton, 
             AutoIgnoreButton = AutoIgnoreButton, 
-            TeleportOnRespawnButton = TeleportOnRespawnButton, -- NEW (V44)
+            TeleportOnRespawnButton = TeleportOnRespawnButton, 
         },
         CombatPage = {
             ToolNameInput = CToolNameInput,
             TargetNamesInput = CTargetNamesInput,
+            IndexInput = IndexInput,
+            SetCoordsButton = SetCoordsButton,
+            ClearAreasButton = ClearAreasButton, -- Added reference
+            AreaStatusLabel = AreaStatusLabel,
         },
         MiningPage = {
             ToolNameInput = MToolNameInput,
@@ -1009,6 +1314,8 @@ function MultiGrinder:start()
                     self:executeCombatAction(hrp)
                 elseif self.Mode == "Mining" then
                     self:executeMiningAction(hrp)
+                elseif self.Mode == "PriorityScan" then
+                    self:executePriorityScan(hrp)
                 end
             end
         end
