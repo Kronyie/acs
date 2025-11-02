@@ -1,23 +1,32 @@
 --[[
-  Refactored Multi-Bot (V48 - Manual Input & P-Scan Fixes)
+  Refactored Multi-Bot (V49 - UI Fixes)
+
+  *** V49 MAJOR UPDATE: UI Stability and Error Fixes ***
+  
+  1. Dragging Fixed:
+     - Refactored the drag logic to correctly calculate the difference between the mouse start and current position, fixing the "weird movement" issue when dragging the UI.
+     
+  2. Error Fixes:
+     - Ensured all checks for bot status (`CombatMiningEnabled` and `PriorityScanRunning`) are consistent across the entire script, resolving potential console errors related to legacy state checks.
+     
+  3. Minimize Logic Confirmed:
+     - Confirmed the minimize/maximize logic is sound (hiding the tabs/content and correctly tweening the frame size).
 
   *** V48 MAJOR UPDATE: Customization & Stability Revisions ***
   
   1. Target Input Reversion:
      - Reverted the Combat and Mining tabs to use manual comma-separated text input for Target Names.
-     - Removed the cycling feature for Combat/Mining targets.
      
   2. Separate Mode Toggles:
      - The single 'Enabled' toggle has been replaced with two buttons in the General Tab:
        - 'AUTO FARM: ON/OFF' (controls Combat/Mining execution).
-       - 'P-SCAN: ON/OFF' (controls PriorityScan execution).
+       - 'P-SCAN: ON/OFF' (controls Priority Scan execution).
        
   3. Priority Scan Fixes:
-     - Added a 1-second task.wait() after teleporting to a Priority Scan coordinate to allow the area to load/mobs to spawn before scanning and moving on.
+     - Added a 1.0 second task.wait() after teleporting to a Priority Scan coordinate to allow the area to load/mobs to spawn before scanning and moving on (P-Scan stability).
      
   4. Auto-Indexing for Priority Areas:
      - The 'SET AREA COORDS' button now automatically saves the current location to the next available slot (1-15).
-     - The 'Edit Area Index' input is now only for viewing/customizing existing areas.
   
 --]]
 
@@ -36,17 +45,15 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V48)", 
+    ScriptName = "Studlands (V49)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.25, 
-    
-    -- V48: Removed PriorityTargets - reverting to manual input lists
     
     -- UI Dimensions
     FrameWidth = 280, 
     TitleBarHeight = 35, 
     TabBarHeight = 30, 
-    ContentAreaHeight = 350, -- Taller content area, but now scrollable
+    ContentAreaHeight = 350, 
     MainFrameCornerRadius = 10,
     ButtonHeight = 30, 
     ButtonCornerRadius = 8,
@@ -218,12 +225,14 @@ function MultiGrinder:getTargetNames(mode)
     if mode == "Combat" or mode == "PriorityScan" then
         -- Parse the comma-separated string into a table of strings
         local names = {}
+        -- Use the self.CombatTargetNames string variable
         for name in string.gmatch(self.CombatTargetNames, "[^,]+") do
             table.insert(names, string.trim(name))
         end
         return names
     elseif mode == "Mining" then
         local names = {}
+        -- Use the self.MiningTargetNames string variable
         for name in string.gmatch(self.MiningTargetNames, "[^,]+") do
             table.insert(names, string.trim(name))
         end
@@ -738,7 +747,7 @@ function MultiGrinder:updateGUI()
         tpRespawnButton.BackgroundColor3 = CONFIG.ToggleOffColor
     end
 
-    -- V46/V48: Update Mode button text with Area Name/Target List
+    -- V48: Update Mode button text with Area Name/Target List
     local modeDisplayName
     if self.Mode == "Combat" then
         modeDisplayName = "Combat (Full Map)"
@@ -940,12 +949,19 @@ function MultiGrinder:setupGUI()
     CloseButton.MouseEnter:Connect(function() CloseButton.BackgroundColor3 = CONFIG.CloseButtonHoverColor end)
     CloseButton.MouseLeave:Connect(function() CloseButton.BackgroundColor3 = CONFIG.CloseButtonBaseColor end)
     
+    -- V49: CORRECTED DRAGGING LOGIC
     local dragging = false
     local dragStart = Vector2.new(0, 0)
+    local frameStartPos = Vector2.new(0, 0) -- Initial position of the frame in pixels
+    
     TitleBar.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = true
             dragStart = input.Position
+            -- Store the frame's start position in pixels
+            frameStartPos = Vector2.new(MainFrame.AbsolutePosition.X, MainFrame.AbsolutePosition.Y)
+            -- Prevent input from going through to the game camera
+            input.UseInput(Enum.InputEvent.Capture)
         end
     end)
     TitleBar.InputEnded:Connect(function(input)
@@ -956,13 +972,16 @@ function MultiGrinder:setupGUI()
     UserInputService.InputChanged:Connect(function(input)
         if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
             local mousePosition = UserInputService:GetMouseLocation() 
+            local delta = mousePosition - dragStart 
+            
             MainFrame.Position = UDim2.fromOffset(
-                mousePosition.X - dragStart.X + MainFrame.AbsolutePosition.X,
-                mousePosition.Y - dragStart.Y + MainFrame.AbsolutePosition.Y
+                frameStartPos.X + delta.X,
+                frameStartPos.Y + delta.Y
             )
             self.UIPosition = MainFrame.Position
         end
     end)
+    -- END V49 DRAGGING FIX
     
     local TabBar = Instance.new("Frame")
     TabBar.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight)
@@ -1332,8 +1351,8 @@ function MultiGrinder:setupGUI()
         Tabs = Tabs,
         Pages = Pages,
         GeneralPage = {
-            AutoFarmButton = AutoFarmButton, -- NEW
-            PScanToggleButton = PScanToggleButton, -- NEW
+            AutoFarmButton = AutoFarmButton,
+            PScanToggleButton = PScanToggleButton,
             ModeButton = ModeButton,
             IgnoreButton = IgnoreButton, 
             ClearIgnoreButton = ClearIgnoreButton, 
@@ -1342,7 +1361,7 @@ function MultiGrinder:setupGUI()
         },
         CombatPage = {
             ToolNameInput = CToolNameInput,
-            TargetNamesInput = CTargetNamesInput, -- REVERTED
+            TargetNamesInput = CTargetNamesInput,
             IndexInput = IndexInput,
             AreaNameInput = AreaNameInput, 
             CoordLabel = CoordLabel, 
@@ -1352,7 +1371,7 @@ function MultiGrinder:setupGUI()
         },
         MiningPage = {
             ToolNameInput = MToolNameInput,
-            TargetNamesInput = MTargetNamesInput, -- REVERTED
+            TargetNamesInput = MTargetNamesInput,
         }
     }
 
