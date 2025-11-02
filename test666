@@ -1,17 +1,14 @@
 --[[
-  Refactored Multi-Bot (V45 - Optimized Fix)
+  Refactored Multi-Bot (V46 - Patrol & Scan Modes)
 
-  *** V45 FIX & OPTIMIZATION ***
-  - CRITICAL FIX: Resolved the 'attempt to index nil with Position' error (Line 453) which caused the script to crash and stop working.
-  - OPTIMIZATION: Replaced the old, separate target-finding loops with a single, optimized function (findBestCombatTarget) to significantly reduce lag.
-  - PRIORITY FIX: The bot now correctly identifies the closest target within the *highest-priority* zone and teleports to it, resolving the issue of not moving to distant priority areas.
+  *** V46 NEW FEATURES ***
+  - PRIORITY LOGIC CHANGE: The bot will now "patrol" priority zones. It teleports to the center of Priority Zone 1, scans for mobs, and kills them. If no mobs are in Zone 1, it moves to Zone 2, and so on, looping back to 1.
+  - COMBAT SCAN MODE: Added "Scan: Global" and "Scan: Local" buttons to the Combat tab. "Global" (default) scans the whole map for normal targets. "Local" only scans within a set radius (100 studs) of your character for normal targets. This setting does not affect priority zone scanning.
 
-  *** V44 FIX: UI Blank / Sensitive Error ***
-  - Fixed a UI error ("Sensitive is not a valid member") that caused the UI to appear blank when switching to the Combat tab.
-
-  *** V44 NEW FEATURES ***
-  - Added "TP Back on Death: ON/OFF" toggle to the General tab (SafetyNetEnabled).
-  - Added Priority Zone system to the Combat tab.
+  *** V4S45 FIX & OPTIMIZATION ***
+  - CRITICAL FIX: Resolved the 'attempt to index nil with Position' error.
+  - OPTIMIZATION: Replaced old target-finding loops with optimized functions.
+  - PRIORITY FIX: The bot now correctly identifies the closest target within the *highest-priority* zone.
 --]]
 
 local Players = game:GetService("Players")
@@ -29,7 +26,7 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V45 - Optimized Fix)", 
+    ScriptName = "Studlands (V46 - Patrol & Scan)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.25, -- 4 times per second (Adjust this lower if you want faster action, but it will increase lag)
     
@@ -37,7 +34,7 @@ local CONFIG = {
     FrameWidth = 260, 
     TitleBarHeight = 35, 
     TabBarHeight = 30, 
-    ContentAreaHeight = 250, 
+    ContentAreaHeight = 300, -- Increased height for new button
     MainFrameCornerRadius = 10,
     ButtonHeight = 30, 
     ButtonCornerRadius = 8,
@@ -69,6 +66,10 @@ local CONFIG = {
         TargetNames = {"Iron", "Rock", "Blood Stone", "Gold", "Salt Rock"},
         TeleportOffset = Vector3.new(0, 5, 2), 
     },
+    
+    -- V46 Config
+    CombatLocalScanRadius = 100, -- Radius in studs for "Local" scan mode
+    PriorityZoneScanRadius = 15, -- Radius around zone center to scan for mobs
 }
 
 local function getRemotes()
@@ -126,6 +127,10 @@ function MultiGrinder:new()
         
         -- V44: Priority Zones
         PriorityZones = {}, -- Stores Vector3 positions
+
+        -- V46: New State
+        CurrentPriorityZoneIndex = 1,
+        CombatScanMode = "Global", -- "Global" or "Local"
 
         -- Persistent GUI State
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
@@ -211,96 +216,101 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
--- V45: New optimized function replacing findClosestTarget and findPriorityTarget
-function MultiGrinder:findBestCombatTarget(hrp, normalTargetNames)
-    local playerPos = hrp.Position
-    
-    local closestNormalTargetPart = nil
-    local closestNormalTargetKey = nil
-    local minNormalDistance = math.huge
+-- V46: New function to find a target within a specific zone
+function MultiGrinder:findTargetInZone(zonePos, radius, targetNames)
+    local closestTargetPart = nil
+    local closestTargetKey = nil
+    local minDistance = math.huge
 
-    -- Table to store the *closest* target for each zone
-    -- We use an array to respect the 1-15 priority
-    local priorityZoneTargets = {} -- [zoneIndex] = { part, key, distance }
-    
-    local searchSpace = Workspace -- Default
-    
-    for _, obj in ipairs(searchSpace:GetDescendants()) do
+    for _, obj in ipairs(Workspace:GetDescendants()) do
         local humanoid = obj:FindFirstChildOfClass("Humanoid")
         
-        -- Check if it's a valid, living mob
         if humanoid and humanoid.Health > 0 and obj:FindFirstChild("HumanoidRootPart") then
-            
             local targetPart = obj:FindFirstChild("HumanoidRootPart")
-            local targetKey = obj -- The Model is the key
-            
-            if targetKey == LocalPlayer.Character then
-                continue
-            end
+            local targetKey = obj
 
-            if self.IgnoredTargets[targetKey] then
+            if targetKey == LocalPlayer.Character or self.IgnoredTargets[targetKey] then
                 continue
             end
             
-            -- CRITICAL FIX: Ensure the target part still exists and has a position
             if not targetPart or not targetPart.Position then
                 continue
             end
             
-            local distFromPlayer = (targetPart.Position - playerPos).Magnitude
-            local isPriority = false
-
-            -- 1. Check Priority Zones
-            for i, zonePos in ipairs(self.PriorityZones) do
-                if (targetPart.Position - zonePos).Magnitude <= 10 then
-                    -- It's a priority mob.
-                    isPriority = true
-                    
-                    -- Check if it's the *closest* mob found *for this zone* (closest to player)
-                    if not priorityZoneTargets[i] or distFromPlayer < priorityZoneTargets[i].distance then
-                        priorityZoneTargets[i] = {
-                            part = targetPart,
-                            key = targetKey,
-                            distance = distFromPlayer
-                        }
-                    end
-                    
-                    break -- Mob is in a priority zone, stop checking other zones
-                end
-            end
-
-            -- 2. Check Normal Targets (if it wasn't a priority mob)
-            if not isPriority then
-                local isNormal = false
-                -- Check if the object's name matches any target name
-                for _, name in ipairs(normalTargetNames) do
+            -- Check if it's within the zone radius
+            local distFromZoneCenter = (targetPart.Position - zonePos).Magnitude
+            if distFromZoneCenter <= radius then
+                -- It's in the zone. Now check if it's a valid target name.
+                local isTarget = false
+                for _, name in ipairs(targetNames) do
                     if string.lower(obj.Name) == string.lower(name) then
-                        isNormal = true
+                        isTarget = true
                         break
                     end
                 end
                 
-                if isNormal and distFromPlayer < minNormalDistance then
-                    minNormalDistance = distFromPlayer
-                    closestNormalTargetPart = targetPart
-                    closestNormalTargetKey = targetKey
+                -- Find the one closest to the *zone center*
+                if isTarget and distFromZoneCenter < minDistance then
+                    minDistance = distFromZoneCenter
+                    closestTargetPart = targetPart
+                    closestTargetKey = targetKey
                 end
             end
         end
     end
-
-    -- After checking all objects, determine the final target
     
-    -- 1. Return the best priority target (from the lowest index zone)
-    for i = 1, #self.PriorityZones do
-        if priorityZoneTargets[i] then
-            -- Found the highest-priority target
-            return priorityZoneTargets[i].part, priorityZoneTargets[i].key, true -- Return 'true' to indicate priority
+    return closestTargetPart, closestTargetKey
+end
+
+-- V46: New function to find a normal target (respects scan mode)
+function MultiGrinder:findNormalTarget(hrp, targetNames, scanMode, scanRadius)
+    local playerPos = hrp.Position
+    local closestTargetPart = nil
+    local closestTargetKey = nil
+    local minDistance = math.huge
+    
+    local useRadius = (scanMode == "Local") and scanRadius or nil
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        local humanoid = obj:FindFirstChildOfClass("Humanoid")
+        
+        if humanoid and humanoid.Health > 0 and obj:FindFirstChild("HumanoidRootPart") then
+            local targetPart = obj:FindFirstChild("HumanoidRootPart")
+            local targetKey = obj
+
+            if targetKey == LocalPlayer.Character or self.IgnoredTargets[targetKey] then
+                continue
+            end
+            
+            if not targetPart or not targetPart.Position then
+                continue
+            end
+
+            local distFromPlayer = (targetPart.Position - playerPos).Magnitude
+            
+            -- Apply local scan radius if enabled
+            if useRadius and distFromPlayer > useRadius then
+                continue
+            end
+            
+            local isTarget = false
+            for _, name in ipairs(targetNames) do
+                if string.lower(obj.Name) == string.lower(name) then
+                    isTarget = true
+                    break
+                end
+            end
+            
+            -- Find the one closest to the *player*
+            if isTarget and distFromPlayer < minDistance then
+                minDistance = distFromPlayer
+                closestTargetPart = targetPart
+                closestTargetKey = targetKey
+            end
         end
     end
-
-    -- 2. No priority targets found, return the best normal target
-    return closestNormalTargetPart, closestNormalTargetKey, false -- Return 'false'
+    
+    return closestTargetPart, closestTargetKey
 end
 
 
@@ -328,16 +338,48 @@ local function restoreCamera(self)
     end
 end
 
--- V45: REFACTORED executeCombatAction (Optimized and Fixed)
+-- V46: REWRITTEN executeCombatAction (Patrol & Local/Global Scan)
 function MultiGrinder:executeCombatAction(hrp)
     local toolName = self.CombatToolName
     local remotes = self.Remotes
-    
-    -- 1. --- FIND BEST TARGET (OPTIMIZED) ---
     local targetNames = self:getTargetNames("Combat")
-    local newTargetPart, newTargetKey, isPriority = self:findBestCombatTarget(hrp, targetNames)
+    
+    local newTargetPart, newTargetKey = nil, nil
+    local isPriority = false
+    
+    -- 1. --- PRIORITY ZONE PATROL LOGIC ---
+    if #self.PriorityZones > 0 then
+        isPriority = true -- We are in priority mode
+        
+        local currentZonePos = self.PriorityZones[self.CurrentPriorityZoneIndex]
+        
+        -- Teleport TO the zone first
+        hrp.CFrame = CFrame.new(currentZonePos + CONFIG.Combat.TeleportOffset)
+        
+        -- Scan *inside* the zone
+        newTargetPart, newTargetKey = self:findTargetInZone(currentZonePos, CONFIG.PriorityZoneScanRadius, targetNames)
+        
+        if not newTargetPart then
+            -- No target found in this zone, move to the next one
+            print(string.format("[Multi-Bot Debug] No target in Zone %d. Moving to next zone.", self.CurrentPriorityZoneIndex))
+            self.CurrentPriorityZoneIndex = self.CurrentPriorityZoneIndex + 1
+            if self.CurrentPriorityZoneIndex > #self.PriorityZones then
+                self.CurrentPriorityZoneIndex = 1 -- Loop back
+            end
+            
+            self.CurrentTarget = nil -- Clear old target
+            restoreCamera(self)
+            self:updateGUI()
+            return false -- Stop for this frame
+        end
+        
+    -- 2. --- NORMAL TARGET SCAN LOGIC ---
+    else
+        -- No priority zones, find a normal target based on scan mode
+        newTargetPart, newTargetKey = self:findNormalTarget(hrp, targetNames, self.CombatScanMode, CONFIG.CombatLocalScanRadius)
+    end
 
-    -- 2. --- CHECK IF TARGET IS GONE / NEEDS REPLACING ---
+    -- 3. --- CHECK IF TARGET IS GONE / NEEDS REPLACING ---
     local currentTarget = self.CurrentTarget
     
     -- Check if the old target is still valid (exists and is alive)
@@ -351,7 +393,7 @@ function MultiGrinder:executeCombatAction(hrp)
     if newTargetPart then
         -- A target (priority or normal) was found
         if currentTarget ~= newTargetPart then
-            -- It's a new target (or a new *better* priority target)
+            -- It's a new target
             local targetType = isPriority and "PRIORITY" or "NORMAL"
             print(string.format("[Multi-Bot Debug] %s TARGET ACQUIRED: %s", targetType, newTargetKey.Name))
             
@@ -373,7 +415,7 @@ function MultiGrinder:executeCombatAction(hrp)
         return false -- Stop execution, no targets
     end
 
-    -- 3. --- AUTO-IGNORE LOGIC (Applies to our current target) ---
+    -- 4. --- AUTO-IGNORE LOGIC (Applies to our current target) ---
     -- We must have a valid self.CurrentTarget to proceed past this point
     if not self.CurrentTarget then
         restoreCamera(self)
@@ -402,7 +444,7 @@ function MultiGrinder:executeCombatAction(hrp)
         end
     end
 
-    -- 4. --- ATTACK SEQUENCE ---
+    -- 5. --- ATTACK SEQUENCE ---
     if not self.CurrentTarget then
         restoreCamera(self)
         self:updateGUI()
@@ -412,7 +454,7 @@ function MultiGrinder:executeCombatAction(hrp)
     local char = LocalPlayer.Character
     if not char then return false end
     
-    -- 5. --- EQUIP TOOL ---
+    -- 6. --- EQUIP TOOL ---
     local equippedTool = char:FindFirstChild(toolName)
     
     if not equippedTool and remotes.EquipItem then
@@ -431,17 +473,18 @@ function MultiGrinder:executeCombatAction(hrp)
         end
     end
     
-    -- 6. --- TELEPORT AND ATTACK ---
+    -- 7. --- TELEPORT AND ATTACK ---
     local target = self.CurrentTarget 
     local offset = CONFIG.Combat.TeleportOffset
     
     -- CRITICAL FIX: Check if target position exists before teleporting
-    if not target.Position then 
+    if not target or not target.Position then 
         warn("[Multi-Bot Debug] Target lost position mid-attack. Re-acquiring next loop.")
         self.CurrentTarget = nil
         return false 
     end
     
+    -- This teleports from current pos (zone center if priority) to the mob
     local targetPos = target.Position + offset
     hrp.CFrame = CFrame.new(targetPos)
     
@@ -462,17 +505,19 @@ function MultiGrinder:executeCombatAction(hrp)
     return true
 end
 
--- V45: Modified executeMiningAction to use optimized target finding
+-- V46: Modified executeMiningAction to use findNormalTarget (Global Scan only)
 function MultiGrinder:executeMiningAction(hrp)
     local toolName = self.MiningToolName
     local remotes = self.Remotes
 
     local targetNames = self:getTargetNames("Mining")
-    local newResource, newResourceKey, isPriority = self:findBestCombatTarget(hrp, targetNames) -- Use the combat finder for mining too
+    -- Mining always uses Global scan to find resources all over the map
+    local newResource, newResourceKey = self:findNormalTarget(hrp, targetNames, "Global", nil) 
 
     -- Check if target is gone or needs replacing
     local currentTarget = self.CurrentTarget
-    local currentTargetIsValid = currentTarget and currentTarget.Parent and currentTarget.Parent:FindFirstChildOfClass("Humanoid") and currentTarget.Parent:FindFirstChildOfClass("Humanoid").Health > 0
+    -- Mining targets (resources) don't have Humanoids, so we check for Parent
+    local currentTargetIsValid = currentTarget and currentTarget.Parent
 
     if not currentTargetIsValid then
         currentTarget = nil 
@@ -640,7 +685,7 @@ function MultiGrinder:updateGUI()
         end
     end
     
-    -- V44: Combat Page (Priority Zones)
+    -- V44/V46: Combat Page
     if self.MainGui.CombatPage.PriorityZoneLabel then
         local label = self.MainGui.CombatPage.PriorityZoneLabel
         local button = self.MainGui.CombatPage.SetPriorityZoneButton
@@ -649,10 +694,21 @@ function MultiGrinder:updateGUI()
         label.Text = string.format("Priority Zones: %d / 15", zoneCount)
         
         local isFull = (zoneCount >= 15)
-        -- FIX V44: Corrected property from 'Sensitive' to 'AutoButtonColor'
         button.AutoButtonColor = not isFull 
         button.BackgroundColor3 = isFull and Color3.fromRGB(80, 80, 80) or CONFIG.AccentColor
         button.Text = isFull and "Priority Zones Full (15/15)" or "Set Priority Zone (at HRP)"
+    end
+    
+    -- V46: Update Scan Mode Button
+    if self.MainGui.CombatPage.ScanModeButton then
+        local ScanModeButton = self.MainGui.CombatPage.ScanModeButton
+        if self.CombatScanMode == "Local" then
+            ScanModeButton.Text = string.format("Scan: Local (%.0f studs)", CONFIG.CombatLocalScanRadius)
+            ScanModeButton.BackgroundColor3 = CONFIG.ToggleOnColor
+        else
+            ScanModeButton.Text = "Scan: Global"
+            ScanModeButton.BackgroundColor3 = CONFIG.AccentColor
+        end
     end
 end
 
@@ -1038,8 +1094,22 @@ function MultiGrinder:setupGUI()
     ClearPriorityZonesButton.Name = "ClearPriorityZonesButton"
     ClearPriorityZonesButton.MouseButton1Click:Connect(function()
         self.PriorityZones = {}
+        self.CurrentPriorityZoneIndex = 1 -- Reset index
         print("[Multi-Bot Debug] All Priority Zones cleared.")
         self:updateGUI()
+    end)
+
+    -- V46: Scan Mode Button
+    local ScanModeButton = createButton(CombatPage, "Scan: Global", CONFIG.AccentColor, 8)
+    ScanModeButton.Name = "ScanModeButton"
+    ScanModeButton.MouseButton1Click:Connect(function()
+        if self.CombatScanMode == "Global" then
+            self.CombatScanMode = "Local"
+        else
+            self.CombatScanMode = "Global"
+        end
+        self:updateGUI() -- updateGUI will set the correct text and color
+        print(string.format("[Multi-Bot Debug] Combat Scan Mode set to: %s", self.CombatScanMode))
     end)
 
 
@@ -1072,7 +1142,7 @@ function MultiGrinder:setupGUI()
     end)
     
     local MRangeLabel = Instance.new("TextLabel")
-    MRangeLabel.Text = "Search Range: Full Map (Continuous Mining)"
+    MRangeLabel.Text = "Search Range: Full Map (Global Scan)"
     MRangeLabel.Size = UDim2.new(1, 0, 0, 20)
     MRangeLabel.BackgroundTransparency = 1
     MRangeLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
@@ -1104,6 +1174,7 @@ function MultiGrinder:setupGUI()
             PriorityZoneLabel = PriorityZoneLabel, 
             SetPriorityZoneButton = SetPriorityZoneButton, 
             ClearPriorityZonesButton = ClearPriorityZonesButton, 
+            ScanModeButton = ScanModeButton, -- V46: Added
         },
         MiningPage = {
             ToolNameInput = MToolNameInput,
