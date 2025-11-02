@@ -22,7 +22,7 @@ local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Camera = Workspace:WaitForChild("CurrentCamera", 10)
-local Mouse = LocalPlayer:GetMouse() 
+-- local Mouse = LocalPlayer:GetMouse() -- [FIX 1] Removed this line. It's deprecated and not used by the script.
 
 local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
@@ -1320,7 +1320,12 @@ end
 
 -- SCRIPT EXECUTION
 
-pcall(function()
-    local bot = MultiGrinder:new()
-    bot:start()
-end)
+-- [FIX 2] Wrap the execution in a function and return it.
+-- This makes the script compatible with executors that load
+-- the script and expect a function to be returned.
+return function()
+    pcall(function()
+        local bot = MultiGrinder:new()
+        bot:start()
+    end)
+end
