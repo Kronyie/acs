@@ -15,13 +15,24 @@
   - Teleport on Death SafetyNet (V44).
 --]]
 
+-- [FIX 4] Robust global definitions for executor compatibility
+local Workspace = workspace or game:GetService("Workspace")
+local game = game or Workspace.Parent
 local Players = game:GetService("Players")
 local LocalPlayer = Players:WaitForChild("LocalPlayer", 10) -- Use WaitForChild for robustness
-if not LocalPlayer then return end
-local Workspace = game:GetService("Workspace")
+if not LocalPlayer then
+    print("[Multi-Bot] FAILED: Could not find LocalPlayer.")
+    return 
+end
+
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Camera = Workspace:WaitForChild("CurrentCamera", 10)
+
+if not Camera then
+    print("[Multi-Bot] FAILED: Could not find Camera.")
+    return
+end
 -- local Mouse = LocalPlayer:GetMouse() -- [FIX 1] Removed this line. It's deprecated and not used by the script.
 
 local MultiGrinder = {}
@@ -1331,4 +1342,5 @@ task.spawn(function()
 end)
 
 -- We no longer return a function, as that didn't seem to solve the issue.
+
 
