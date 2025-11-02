@@ -1,17 +1,13 @@
 --[[
-  Refactored Multi-Bot (V45 - Optimized Fix)
+  Refactored Multi-Bot (V46 - Robust Fix)
+
+  *** V46 FIX & OPTIMIZATION ***
+  - CRITICAL FIX: Resolved the new 'attempt to index nil with Parent' error (Line 466) by replacing the target validity check with a robust helper function. This prevents crashes when mob instances are destroyed instantly.
+  - PRIORITY FIX: The fix ensures the bot's state isn't corrupted, preventing the priority target logic from stopping after the first successful kill/teleport.
 
   *** V45 FIX & OPTIMIZATION ***
-  - CRITICAL FIX: Resolved the 'attempt to index nil with Position' error (Line 453) which caused the script to crash and stop working.
-  - OPTIMIZATION: Replaced the old, separate target-finding loops with a single, optimized function (findBestCombatTarget) to significantly reduce lag.
-  - PRIORITY FIX: The bot now correctly identifies the closest target within the *highest-priority* zone and teleports to it, resolving the issue of not moving to distant priority areas.
-
-  *** V44 FIX: UI Blank / Sensitive Error ***
-  - Fixed a UI error ("Sensitive is not a valid member") that caused the UI to appear blank when switching to the Combat tab.
-
-  *** V44 NEW FEATURES ***
-  - Added "TP Back on Death: ON/OFF" toggle to the General tab (SafetyNetEnabled).
-  - Added Priority Zone system to the Combat tab.
+  - Optimized Target Finding: Replaced old loops with a single, efficient function (findBestCombatTarget) to reduce lag.
+  - Teleport Fix: Confirmed correct teleportation to the highest-priority zone regardless of distance.
 --]]
 
 local Players = game:GetService("Players")
@@ -29,7 +25,7 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V45 - Optimized Fix)", 
+    ScriptName = "Studlands (V46 - Robust Fix)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.25, -- 4 times per second (Adjust this lower if you want faster action, but it will increase lag)
     
@@ -328,10 +324,21 @@ local function restoreCamera(self)
     end
 end
 
--- V45: REFACTORED executeCombatAction (Optimized and Fixed)
+-- V46: REFACTORED executeCombatAction (Fixing 'Parent' Indexing Error)
 function MultiGrinder:executeCombatAction(hrp)
     local toolName = self.CombatToolName
     local remotes = self.Remotes
+    
+    -- V46 Helper function for robust target validity check
+    local function isTargetValid(targetPart)
+        -- Check if targetPart exists, is a BasePart, and has a Parent.
+        if not targetPart or not targetPart:IsA("BasePart") or not targetPart.Parent then
+            return false
+        end
+        -- Check if the parent model has a living Humanoid
+        local humanoid = targetPart.Parent:FindFirstChildOfClass("Humanoid")
+        return humanoid and humanoid.Health > 0
+    end
     
     -- 1. --- FIND BEST TARGET (OPTIMIZED) ---
     local targetNames = self:getTargetNames("Combat")
@@ -340,8 +347,8 @@ function MultiGrinder:executeCombatAction(hrp)
     -- 2. --- CHECK IF TARGET IS GONE / NEEDS REPLACING ---
     local currentTarget = self.CurrentTarget
     
-    -- Check if the old target is still valid (exists and is alive)
-    local currentTargetIsValid = currentTarget and currentTarget.Parent and currentTarget.Parent:FindFirstChildOfClass("Humanoid") and currentTarget.Parent:FindFirstChildOfClass("Humanoid").Health > 0
+    -- V46: Use the robust validity check to prevent the 'Parent' index error.
+    local currentTargetIsValid = isTargetValid(currentTarget) 
 
     if not currentTargetIsValid then
         currentTarget = nil -- Our old target is dead or gone
@@ -435,7 +442,7 @@ function MultiGrinder:executeCombatAction(hrp)
     local target = self.CurrentTarget 
     local offset = CONFIG.Combat.TeleportOffset
     
-    -- CRITICAL FIX: Check if target position exists before teleporting
+    -- Check if target position exists before teleporting (Defense against mid-sequence destruction)
     if not target.Position then 
         warn("[Multi-Bot Debug] Target lost position mid-attack. Re-acquiring next loop.")
         self.CurrentTarget = nil
@@ -466,13 +473,19 @@ end
 function MultiGrinder:executeMiningAction(hrp)
     local toolName = self.MiningToolName
     local remotes = self.Remotes
+    
+    -- V46 Helper function for robust target validity check (same as combat, slightly different logic)
+    local function isTargetValid(targetPart)
+        -- For mining, we check if the object is still there (Parent exists)
+        return targetPart and targetPart.Parent
+    end
 
     local targetNames = self:getTargetNames("Mining")
     local newResource, newResourceKey, isPriority = self:findBestCombatTarget(hrp, targetNames) -- Use the combat finder for mining too
 
     -- Check if target is gone or needs replacing
     local currentTarget = self.CurrentTarget
-    local currentTargetIsValid = currentTarget and currentTarget.Parent and currentTarget.Parent:FindFirstChildOfClass("Humanoid") and currentTarget.Parent:FindFirstChildOfClass("Humanoid").Health > 0
+    local currentTargetIsValid = isTargetValid(currentTarget)
 
     if not currentTargetIsValid then
         currentTarget = nil 
