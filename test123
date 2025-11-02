@@ -1,22 +1,21 @@
 --[[
-  Refactored Multi-Bot (V47 - Priority Teleport Fix)
+  Refactored Multi-Bot (V48 - Nil Target Fix)
 
-  *** V47 CRITICAL FIX: Priority Teleport Logic ***
-  - RESOLVED: Priority targets were previously only found if they were within 10 studs of the zone AND the player.
-  - NEW LOGIC: The bot now iterates through zones 1-15, teleports directly to the center of each zone, pauses briefly (0.5s), and then searches a 20-stud radius for any valid target.
-  - FALLBACK: If all 15 zones are checked and empty, the bot reverts to searching the entire map for normal targets.
-  
-  *** V46 FIX & OPTIMIZATION ***
-  - CRITICAL FIX: Resolved the 'attempt to index nil with Parent' error by using a robust target validity helper function. This prevents crashes when mob instances are destroyed instantly, which also stabilized the priority check.
+  *** V48 CRITICAL FIX: Target Position Nil Error ***
+  - RESOLVED: 'attempt to index nil with 'Position'' error that occurred when a mob was destroyed instantly after being acquired.
+  - FIX: Added a strong, immediate check on the local 'target' variable to ensure it is a valid BasePart Instance before accessing its '.Position' property in the teleport sequence.
+
+  *** V47 LOGIC (Priority Teleport) RETAINED ***
+  - The bot still iterates through zones 1-15, teleports directly to the center of each zone, pauses briefly (0.5s), and then searches a 20-stud radius for any valid target.
 --]]
 
 local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
+local LocalPlayer = Players:WaitForChild("LocalPlayer", 10) -- Use WaitForChild for robustness
 if not LocalPlayer then return end
 local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local Camera = Workspace.CurrentCamera
+local Camera = Workspace:WaitForChild("CurrentCamera", 10)
 local Mouse = LocalPlayer:GetMouse() 
 
 local MultiGrinder = {}
@@ -25,7 +24,7 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V47 - Priority Teleport Fix)", 
+    ScriptName = "Studlands (V48 - Nil Target Fix)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.25, -- 4 times per second (Adjust this lower if you want faster action, but it will increase lag)
     
@@ -344,7 +343,7 @@ local function restoreCamera(self)
     end
 end
 
--- V46: REFACTORED executeCombatAction (Fixing 'Parent' Indexing Error)
+-- V48: REFACTORED executeCombatAction (Fixing Nil Target Error)
 function MultiGrinder:executeCombatAction(hrp)
     local toolName = self.CombatToolName
     local remotes = self.Remotes
@@ -366,8 +365,7 @@ function MultiGrinder:executeCombatAction(hrp)
     local currentTarget = self.CurrentTarget
     if not isTargetValid(currentTarget) then
         currentTarget = nil 
-        self.CurrentTarget = nil
-        self.CurrentTargetIdentifier = nil 
+        self.CurrentTarget = nil 
     end
     
     if currentTarget then
@@ -463,9 +461,12 @@ function MultiGrinder:executeCombatAction(hrp)
     end
     
     if self.AutoIgnoreEnabled and self.TargetAcquiredTime and (os.clock() - self.TargetAcquiredTime > 10) then
-        local humanoid = self.CurrentTarget.Parent:FindFirstChildOfClass("Humanoid")
+        -- We must check for Parent existence before accessing Humanoid
+        local targetParent = self.CurrentTarget.Parent
+        local humanoid = targetParent and targetParent:FindFirstChildOfClass("Humanoid")
+        
         if humanoid and humanoid.Health > 0 then
-            local targetName = self.CurrentTarget.Parent and self.CurrentTarget.Parent.Name or self.CurrentTarget.Name
+            local targetName = targetParent and targetParent.Name or self.CurrentTarget.Name
             print(string.format("[Multi-Bot Debug] Target %s alive for > 10s. Auto-ignoring.", targetName))
             
             if self.CurrentTargetIdentifier then
@@ -483,12 +484,7 @@ function MultiGrinder:executeCombatAction(hrp)
         end
     end
 
-    -- 4. --- ATTACK SEQUENCE ---
-    if not self.CurrentTarget then
-        restoreCamera(self)
-        self:updateGUI()
-        return false
-    end
+    -- 4. --- ATTACK SEQUENCE CONTINUES ---
 
     local char = LocalPlayer.Character
     if not char then return false end
@@ -514,6 +510,15 @@ function MultiGrinder:executeCombatAction(hrp)
     
     -- 6. --- TELEPORT AND ATTACK ---
     local target = self.CurrentTarget 
+    
+    -- *** CRITICAL V48 CHECK ***
+    -- If the target instance was removed right after the target acquisition check, 'target' will be nil.
+    if not target or not target:IsA("BasePart") then
+         warn("[Multi-Bot Debug] V48: Target is nil or invalid BasePart before teleport. Aborting attack.")
+         self.CurrentTarget = nil
+         return false
+    end
+    
     local offset = CONFIG.Combat.TeleportOffset
     
     -- Check if target position exists before teleporting (Defense against mid-sequence destruction)
@@ -606,6 +611,14 @@ function MultiGrinder:executeMiningAction(hrp)
     end
     
     local resource = self.CurrentTarget
+    
+    -- *** CRITICAL V48 CHECK FOR MINING ***
+    if not resource or not resource:IsA("BasePart") then
+         warn("[Multi-Bot Debug] V48: Resource is nil or invalid BasePart before teleport. Aborting mining.")
+         self.CurrentTarget = nil
+         return false
+    end
+    
     local offset = CONFIG.Mining.TeleportOffset
     
     if not resource.Position then 
