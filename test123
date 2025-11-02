@@ -1,13 +1,16 @@
 --[[
-  Refactored Multi-Bot (V50 - Server Crash Fix V2)
+  Refactored Multi-Bot (V51 - Final Remote Fix)
 
-  *** V50 CRITICAL FIX: Server-Side MobManager Crash (V2) ***
-  - RESOLVED: 'attempt to index nil with 'Parent'' error from the server's MobManager script.
-  - CAUSE: The V49 fix wasn't robust enough to handle fast race conditions where the mob died immediately after client teleport.
-  - FIX: 
-    1. **Hardened isTargetValid:** Added a check to ensure the target's main parent is still the Workspace (or nil if it's not parented anymore), which is a much stronger check for a destroyed object.
-    2. **Guaranteed Target Part:** Ensured CurrentTarget is a BasePart before running the attack sequence.
-    3. **Atomic Check:** Moved the final validity check immediately before the 'UseItem' remote fire, minimizing the race condition window to the absolute limit of what the client can control.
+  *** V51 CRITICAL FIX: Remote Parameter Error ***
+  - RESOLVED: 'attempt to index nil with 'Parent'' crash on the server.
+  - CAUSE: The previous versions were sending 'false' as the target argument in the UseItem remote call (remotes.UseItem:FireServer(toolInstance, false)). 
+    The server's MobManager script was likely crashing when it tried to index the boolean 'false' or was receiving a nil target.
+  - FIX: The `simulateAction` function is now correctly passing the `targetPart` instance to the server remote: 
+    remotes.UseItem:FireServer(toolInstance, targetPart)
+    
+  *** V50 Features retained: ***
+  - Hardened target validation right before the remote fire to prevent race conditions.
+  - Priority Zone Hunting and Auto-Ignore logic.
 --]]
 
 local Players = game:GetService("Players")
@@ -25,7 +28,7 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V50 - Server Crash Fix V2)", 
+    ScriptName = "Studlands (V51 - Final Remote Fix)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.25, -- 4 times per second (Adjust this lower if you want faster action, but it will increase lag)
     
@@ -85,7 +88,7 @@ local function getRemotes()
     end
     
     if remotes.UseItem then
-        print("[Multi-Bot Debug] Remote UseItem FOUND. Using direct fire bypass.")
+        print("[Multi-Bot Debug] Remote UseItem FOUND. Now passing target instance.")
     else
         warn("[Multi-Bot Debug] Remote: CRITICAL - UseItem remote not found. Bot will likely fail.")
     end
@@ -229,15 +232,13 @@ local function isTargetValid(targetPart)
             break -- Found the Workspace link, it's alive
         end
         rootParent = rootParent.Parent
-        if rootParent == game then -- Hit the root, but not Workspace. Something is wrong.
+        if rootParent == game or rootParent:IsA("DataModel") then 
             return false 
         end
-        if rootParent:IsA("DataModel") then -- Hit game, but not Workspace. Something is wrong.
-            return false
-        end
     end
+    
+    -- Additional check if the target's model parent isn't in the Workspace
     if rootParent ~= Workspace and rootParent:IsA("Model") and rootParent.Parent ~= Workspace then
-        -- This covers cases where target.Parent is a Model but it's not in the Workspace
         return false 
     end
 
@@ -379,15 +380,14 @@ function MultiGrinder:findBestCombatTarget(hrp, normalTargetNames)
 end
 
 
--- simulateAction function
-
+-- V51: SIMULATE ACTION (Now passes the target part to the remote)
 function MultiGrinder:simulateAction(toolName, targetPart)
     local char = LocalPlayer.Character
     local remotes = self.Remotes
     
     if not char or not remotes.UseItem then return end
     
-    -- V50: CRITICAL FINAL CHECK (The last possible moment)
+    -- V50: CRITICAL FINAL CHECK (The last possible moment before remote fire)
     if not isTargetValid(targetPart) then
         warn("[Multi-Bot Debug] V50 Atomic Check FAILED: Target is invalid right before remote fire. ABORTING.")
         self.CurrentTarget = nil
@@ -400,8 +400,8 @@ function MultiGrinder:simulateAction(toolName, targetPart)
     local toolInstance = char:FindFirstChild(toolName) or LocalPlayer.Backpack:FindFirstChild(toolName)
 
     if toolInstance then
-        -- This is the point of the crash. If targetPart is guaranteed valid, the server should not crash.
-        remotes.UseItem:FireServer(toolInstance, false)
+        -- V51 FIX: Passing the actual target part instead of 'false'
+        remotes.UseItem:FireServer(toolInstance, targetPart)
     else
         warn(string.format("[Multi-Bot Debug] CRITICAL FAILURE: Tool Instance (%s) not found in Character OR Backpack. Check tool name configuration.", toolName))
     end
@@ -684,7 +684,7 @@ function MultiGrinder:executeMiningAction(hrp)
         local resourceCFrame = CFrame.new(resource.Position)
         Camera.CFrame = CFrame.new(resourceCFrame.p + (resourceCFrame.LookVector * -5) + Vector3.new(0, 2, 0), resourceCFrame.p)
         
-        -- V50: SIMULATE ACTION (Pass the target to the function for the atomic check)
+        -- V51: SIMULATE ACTION (Pass the actual target to the function)
         self:simulateAction(toolName, resource)
     else
         warn("[Multi-Bot Debug] Resource or Camera was invalid during mining sequence.")
@@ -694,7 +694,7 @@ function MultiGrinder:executeMiningAction(hrp)
     return true
 end
 
--- GUI LOGIC & COMPONENTS (No changes in V50)
+-- GUI LOGIC & COMPONENTS (No changes)
 
 function MultiGrinder:setMinimizedState(isMinimized)
     self.IsMinimized = isMinimized
