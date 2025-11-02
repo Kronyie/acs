@@ -1,13 +1,13 @@
 --[[
-  Refactored Multi-Bot (V46 - Robust Fix)
+  Refactored Multi-Bot (V47 - Priority Teleport Fix)
 
+  *** V47 CRITICAL FIX: Priority Teleport Logic ***
+  - RESOLVED: Priority targets were previously only found if they were within 10 studs of the zone AND the player.
+  - NEW LOGIC: The bot now iterates through zones 1-15, teleports directly to the center of each zone, pauses briefly (0.5s), and then searches a 20-stud radius for any valid target.
+  - FALLBACK: If all 15 zones are checked and empty, the bot reverts to searching the entire map for normal targets.
+  
   *** V46 FIX & OPTIMIZATION ***
-  - CRITICAL FIX: Resolved the new 'attempt to index nil with Parent' error (Line 466) by replacing the target validity check with a robust helper function. This prevents crashes when mob instances are destroyed instantly.
-  - PRIORITY FIX: The fix ensures the bot's state isn't corrupted, preventing the priority target logic from stopping after the first successful kill/teleport.
-
-  *** V45 FIX & OPTIMIZATION ***
-  - Optimized Target Finding: Replaced old loops with a single, efficient function (findBestCombatTarget) to reduce lag.
-  - Teleport Fix: Confirmed correct teleportation to the highest-priority zone regardless of distance.
+  - CRITICAL FIX: Resolved the 'attempt to index nil with Parent' error by using a robust target validity helper function. This prevents crashes when mob instances are destroyed instantly, which also stabilized the priority check.
 --]]
 
 local Players = game:GetService("Players")
@@ -25,10 +25,14 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V46 - Robust Fix)", 
+    ScriptName = "Studlands (V47 - Priority Teleport Fix)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.25, -- 4 times per second (Adjust this lower if you want faster action, but it will increase lag)
     
+    -- V47: New Priority Zone Hunt Config
+    PriorityZoneSearchRadius = 20, -- How far from the zone center to check for mobs
+    PriorityZoneTeleportDelay = 0.5, -- How long to wait at the zone center for mobs to spawn/register
+
     -- UI Dimensions
     FrameWidth = 260, 
     TitleBarHeight = 35, 
@@ -122,6 +126,9 @@ function MultiGrinder:new()
         
         -- V44: Priority Zones
         PriorityZones = {}, -- Stores Vector3 positions
+        
+        -- V47: Index for the current zone being checked
+        CurrentZoneIndex = 1, 
 
         -- Persistent GUI State
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
@@ -140,6 +147,7 @@ function MultiGrinder:new()
         self.CurrentTarget = nil
         self.CurrentTargetIdentifier = nil 
         self.TargetAcquiredTime = nil 
+        self.CurrentZoneIndex = 1 -- V47: Reset zone check index
         print("[Multi-Bot Debug] Character respawned. EquippedToolName reset to force re-equip.")
         
         -- V44: SafetyNet (Teleport back on death)
@@ -207,20 +215,15 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
--- V45: New optimized function replacing findClosestTarget and findPriorityTarget
-function MultiGrinder:findBestCombatTarget(hrp, normalTargetNames)
-    local playerPos = hrp.Position
+-- V47: Helper to find the closest valid target within a local radius
+local function findLocalTarget(centerPos, radius, normalTargetNames, ignoredTargets)
+    local closestTargetPart = nil
+    local closestTargetKey = nil
+    local minDist = math.huge
+    local playerPos = centerPos -- Searching relative to the zone center (where we just teleported)
     
-    local closestNormalTargetPart = nil
-    local closestNormalTargetKey = nil
-    local minNormalDistance = math.huge
+    local searchSpace = Workspace 
 
-    -- Table to store the *closest* target for each zone
-    -- We use an array to respect the 1-15 priority
-    local priorityZoneTargets = {} -- [zoneIndex] = { part, key, distance }
-    
-    local searchSpace = Workspace -- Default
-    
     for _, obj in ipairs(searchSpace:GetDescendants()) do
         local humanoid = obj:FindFirstChildOfClass("Humanoid")
         
@@ -230,11 +233,11 @@ function MultiGrinder:findBestCombatTarget(hrp, normalTargetNames)
             local targetPart = obj:FindFirstChild("HumanoidRootPart")
             local targetKey = obj -- The Model is the key
             
-            if targetKey == LocalPlayer.Character then
+            if targetKey == Players.LocalPlayer.Character then
                 continue
             end
 
-            if self.IgnoredTargets[targetKey] then
+            if ignoredTargets[targetKey] then
                 continue
             end
             
@@ -242,61 +245,78 @@ function MultiGrinder:findBestCombatTarget(hrp, normalTargetNames)
             if not targetPart or not targetPart.Position then
                 continue
             end
+
+            local distFromCenter = (targetPart.Position - playerPos).Magnitude
             
-            local distFromPlayer = (targetPart.Position - playerPos).Magnitude
-            local isPriority = false
-
-            -- 1. Check Priority Zones
-            for i, zonePos in ipairs(self.PriorityZones) do
-                if (targetPart.Position - zonePos).Magnitude <= 10 then
-                    -- It's a priority mob.
-                    isPriority = true
-                    
-                    -- Check if it's the *closest* mob found *for this zone* (closest to player)
-                    if not priorityZoneTargets[i] or distFromPlayer < priorityZoneTargets[i].distance then
-                        priorityZoneTargets[i] = {
-                            part = targetPart,
-                            key = targetKey,
-                            distance = distFromPlayer
-                        }
-                    end
-                    
-                    break -- Mob is in a priority zone, stop checking other zones
-                end
-            end
-
-            -- 2. Check Normal Targets (if it wasn't a priority mob)
-            if not isPriority then
-                local isNormal = false
-                -- Check if the object's name matches any target name
+            -- 1. Local Radius Check
+            if distFromCenter <= radius then
+                -- 2. Check if the object's name matches any target name
+                local isTarget = false
                 for _, name in ipairs(normalTargetNames) do
                     if string.lower(obj.Name) == string.lower(name) then
-                        isNormal = true
+                        isTarget = true
                         break
                     end
                 end
                 
-                if isNormal and distFromPlayer < minNormalDistance then
-                    minNormalDistance = distFromPlayer
-                    closestNormalTargetPart = targetPart
-                    closestNormalTargetKey = targetKey
+                if isTarget and distFromCenter < minDist then
+                    minDist = distFromCenter
+                    closestTargetPart = targetPart
+                    closestTargetKey = targetKey
                 end
             end
         end
     end
 
-    -- After checking all objects, determine the final target
+    return closestTargetPart, closestTargetKey
+end
+
+-- V47: findBestCombatTarget is now a dedicated FALLBACK function
+function MultiGrinder:findBestCombatTarget(hrp, normalTargetNames)
+    local playerPos = hrp.Position
     
-    -- 1. Return the best priority target (from the lowest index zone)
-    for i = 1, #self.PriorityZones do
-        if priorityZoneTargets[i] then
-            -- Found the highest-priority target
-            return priorityZoneTargets[i].part, priorityZoneTargets[i].key, true -- Return 'true' to indicate priority
+    local closestNormalTargetPart = nil
+    local closestNormalTargetKey = nil
+    local minNormalDistance = math.huge
+    
+    -- NOTE: Priority Zones are NO LONGER checked here. This is ONLY the map-wide fallback search.
+    
+    local searchSpace = Workspace 
+    
+    for _, obj in ipairs(searchSpace:GetDescendants()) do
+        local humanoid = obj:FindFirstChildOfClass("Humanoid")
+        
+        if humanoid and humanoid.Health > 0 and obj:FindFirstChild("HumanoidRootPart") then
+            
+            local targetPart = obj:FindFirstChild("HumanoidRootPart")
+            local targetKey = obj -- The Model is the key
+            
+            if targetKey == LocalPlayer.Character then continue end
+            if self.IgnoredTargets[targetKey] then continue end
+            
+            if not targetPart or not targetPart.Position then continue end
+            
+            local distFromPlayer = (targetPart.Position - playerPos).Magnitude
+            
+            -- Check Normal Targets
+            local isNormal = false
+            for _, name in ipairs(normalTargetNames) do
+                if string.lower(obj.Name) == string.lower(name) then
+                    isNormal = true
+                    break
+                end
+            end
+            
+            if isNormal and distFromPlayer < minNormalDistance then
+                minNormalDistance = distFromPlayer
+                closestNormalTargetPart = targetPart
+                closestNormalTargetKey = targetKey
+            end
         end
     end
-
-    -- 2. No priority targets found, return the best normal target
-    return closestNormalTargetPart, closestNormalTargetKey, false -- Return 'false'
+    
+    -- No priority targets found (because that's handled in executeCombatAction now), return the best normal target
+    return closestNormalTargetPart, closestNormalTargetKey, false -- Return 'false' for isPriority
 end
 
 
@@ -328,7 +348,9 @@ end
 function MultiGrinder:executeCombatAction(hrp)
     local toolName = self.CombatToolName
     local remotes = self.Remotes
-    
+    local targetNames = self:getTargetNames("Combat")
+    local numZones = #self.PriorityZones
+
     -- V46 Helper function for robust target validity check
     local function isTargetValid(targetPart)
         -- Check if targetPart exists, is a BasePart, and has a Parent.
@@ -340,35 +362,86 @@ function MultiGrinder:executeCombatAction(hrp)
         return humanoid and humanoid.Health > 0
     end
     
-    -- 1. --- FIND BEST TARGET (OPTIMIZED) ---
-    local targetNames = self:getTargetNames("Combat")
-    local newTargetPart, newTargetKey, isPriority = self:findBestCombatTarget(hrp, targetNames)
-
-    -- 2. --- CHECK IF TARGET IS GONE / NEEDS REPLACING ---
+    -- 1. --- CHECK CURRENT TARGET (If invalid, reset) ---
     local currentTarget = self.CurrentTarget
-    
-    -- V46: Use the robust validity check to prevent the 'Parent' index error.
-    local currentTargetIsValid = isTargetValid(currentTarget) 
-
-    if not currentTargetIsValid then
-        currentTarget = nil -- Our old target is dead or gone
+    if not isTargetValid(currentTarget) then
+        currentTarget = nil 
         self.CurrentTarget = nil
+        self.CurrentTargetIdentifier = nil 
     end
+    
+    if currentTarget then
+        -- If we have a valid target, we just continue to attack it (Skip all finding logic)
+        -- This ensures the bot doesn't abandon a low-health mob to check zones
+        goto AttackSequence
+    end
+    
+    -- V47: NEW PRIORITY HUNT LOOP
+    if numZones > 0 then
+        local zoneFound = false
+        
+        -- Start loop from current index (or reset to 1 if out of bounds)
+        if self.CurrentZoneIndex > numZones then
+            self.CurrentZoneIndex = 1
+        end
+
+        for i = self.CurrentZoneIndex, numZones do
+            local zonePos = self.PriorityZones[i]
+            local targetPos = zonePos + Vector3.new(0, 5, 0) -- Teleport slightly above the ground/zone position
+            
+            print(string.format("[Multi-Bot Debug] HUNTING Zone %d/%d: Teleporting to %s", i, numZones, tostring(zonePos)))
+
+            -- TELEPORT TO ZONE
+            hrp.CFrame = CFrame.new(targetPos) 
+            
+            -- Wait for mobs to register/spawn/lag to clear
+            task.wait(CONFIG.PriorityZoneTeleportDelay)
+            
+            -- SEARCH LOCALLY
+            local newTargetPart, newTargetKey = findLocalTarget(
+                zonePos, 
+                CONFIG.PriorityZoneSearchRadius, 
+                targetNames, 
+                self.IgnoredTargets
+            )
+            
+            if newTargetPart then
+                -- Target found! Set as new target and break the zone loop
+                print(string.format("[Multi-Bot Debug] PRIORITY TARGET ACQUIRED in Zone %d: %s", i, newTargetKey.Name))
+                self.CurrentTarget = newTargetPart
+                self.CurrentTargetIdentifier = newTargetKey
+                self.TargetAcquiredTime = os.clock() 
+                self.CurrentZoneIndex = i -- Stay on this zone index
+                zoneFound = true
+                self:updateGUI()
+                goto AttackSequence 
+            end
+            
+            -- If not found, move to the next zone in the next loop cycle
+            self.CurrentZoneIndex = i + 1 
+        end
+        
+        -- If we finished the loop without finding a target
+        if not zoneFound then
+            print("[Multi-Bot Debug] All Priority Zones checked. Falling back to map-wide search.")
+            self.CurrentZoneIndex = 1 -- Reset for the next time we enter this block
+        end
+    end
+    
+    -- 2. --- FALLBACK: FIND BEST TARGET (MAP-WIDE SEARCH) ---
+    local newTargetPart, newTargetKey = self:findBestCombatTarget(hrp, targetNames)
 
     if newTargetPart then
-        -- A target (priority or normal) was found
+        -- A normal map-wide target was found
         if currentTarget ~= newTargetPart then
-            -- It's a new target (or a new *better* priority target)
-            local targetType = isPriority and "PRIORITY" or "NORMAL"
-            print(string.format("[Multi-Bot Debug] %s TARGET ACQUIRED: %s", targetType, newTargetKey.Name))
-            
+            print(string.format("[Multi-Bot Debug] NORMAL FALLBACK TARGET ACQUIRED: %s", newTargetKey.Name))
             self.CurrentTarget = newTargetPart
             self.CurrentTargetIdentifier = newTargetKey
-            self.TargetAcquiredTime = os.clock() -- Set timer for this new target
+            self.TargetAcquiredTime = os.clock() 
             self:updateGUI()
         end
     else
-        -- No targets were found at all (neither priority nor normal)
+        -- No targets were found at all
         if currentTarget then
             -- We had a target, but now there are none. Clear it.
             self.CurrentTarget = nil
@@ -381,7 +454,8 @@ function MultiGrinder:executeCombatAction(hrp)
     end
 
     -- 3. --- AUTO-IGNORE LOGIC (Applies to our current target) ---
-    -- We must have a valid self.CurrentTarget to proceed past this point
+    ::AttackSequence::
+    
     if not self.CurrentTarget then
         restoreCamera(self)
         self:updateGUI()
@@ -481,7 +555,8 @@ function MultiGrinder:executeMiningAction(hrp)
     end
 
     local targetNames = self:getTargetNames("Mining")
-    local newResource, newResourceKey, isPriority = self:findBestCombatTarget(hrp, targetNames) -- Use the combat finder for mining too
+    -- Mining still uses the map-wide search, as moving to a mining zone may not be efficient
+    local newResource, newResourceKey, isPriority = self:findBestCombatTarget(hrp, targetNames) 
 
     -- Check if target is gone or needs replacing
     local currentTarget = self.CurrentTarget
@@ -912,6 +987,7 @@ function MultiGrinder:setupGUI()
         self.CurrentTargetIdentifier = nil 
         self.EquippedToolName = nil
         self.TargetAcquiredTime = nil 
+        self.CurrentZoneIndex = 1 -- V47: Reset zone check index
         if not self.Enabled then
             restoreCamera(self) 
         end
@@ -932,6 +1008,7 @@ function MultiGrinder:setupGUI()
         self.CurrentTargetIdentifier = nil 
         self.EquippedToolName = nil
         self.TargetAcquiredTime = nil 
+        self.CurrentZoneIndex = 1 -- V47: Reset zone check index
         restoreCamera(self)
         self:updateGUI()
         print(string.format("[Multi-Bot Debug] Mode changed to: %s", self.Mode))
@@ -951,6 +1028,7 @@ function MultiGrinder:setupGUI()
             self.CurrentTarget = nil 
             self.CurrentTargetIdentifier = nil 
             self.TargetAcquiredTime = nil 
+            self.CurrentZoneIndex = 1 -- V47: Reset zone check index
             restoreCamera(self)
             self:updateGUI()
         else
@@ -1037,6 +1115,7 @@ function MultiGrinder:setupGUI()
             local hrp = self:getHumanoidRootPart()
             if hrp then
                 table.insert(self.PriorityZones, hrp.Position)
+                self.CurrentZoneIndex = 1 -- Reset index to start checking from 1 again on next cycle
                 print(string.format("[Multi-Bot Debug] Priority Zone %d set at %s", #self.PriorityZones, tostring(hrp.Position)))
                 self:updateGUI()
             else
@@ -1051,6 +1130,7 @@ function MultiGrinder:setupGUI()
     ClearPriorityZonesButton.Name = "ClearPriorityZonesButton"
     ClearPriorityZonesButton.MouseButton1Click:Connect(function()
         self.PriorityZones = {}
+        self.CurrentZoneIndex = 1 -- Reset index
         print("[Multi-Bot Debug] All Priority Zones cleared.")
         self:updateGUI()
     end)
