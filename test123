@@ -15,8 +15,7 @@ MultiGrinder.__index = MultiGrinder
 local CONFIG = {
     ScriptName = "Studlands (V47)", 
     DefaultMode = "Combat", 
-    FarmSpeed = 0.25, -- EDITED: Was 0.05 (20x/sec). Changed to 0.25 (4x/sec) to reduce lag.
-    MiningSpeed = 0.05, -- NEW: Faster loop interval for Mining TP/Action
+    FarmSpeed = 0.05, -- EDITED: Set to 0.05 (20x/sec) for much faster teleporting. The previous value was 0.25. You can set this even lower (e.g., 0.01) for maximum speed, but be aware of potential lag.
     
     -- UI Dimensions (Unchanged)
     FrameWidth = 260, 
@@ -188,47 +187,41 @@ function MultiGrinder:findClosestTarget(position, names)
     local minDistance = math.huge
     local searchRadius = math.huge 
 
-    -- OPTIMIZATION: Convert the list of names into a Set (table) for O(1) lookups.
-    -- This is much faster than looping through the 'names' list for every object in the game.
-    local targetNamesSet = {}
-    for _, name in ipairs(names) do
-        targetNamesSet[string.lower(name)] = true
-    end
-
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        -- OPTIMIZATION: Check if the object's name is in our Set.
-        if targetNamesSet[string.lower(obj.Name)] then 
-            
-            -- V43 Target Identification Logic
-            local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
-            local targetKey = nil
-            
-            if targetPart then -- Only proceed if we have a valid part
-                local parentModel = targetPart.Parent
-                local humanoid = parentModel:FindFirstChildOfClass("Humanoid")
-
-                if humanoid then
-                    -- It's a mob. The key is *always* the Model (the parent).
-                    targetKey = parentModel
-                else
-                    -- It's a resource (or something else). The key is the part itself.
-                    targetKey = targetPart
-                end
-            end
-
-            if targetPart and targetKey and targetPart.Position and targetPart.Parent ~= LocalPlayer.Character then
+        for _, name in ipairs(names) do
+            if string.lower(obj.Name) == string.lower(name) then 
                 
-                -- Check if this specific target identifier is in the ignored list
-                if self.IgnoredTargets[targetKey] then
-                    continue -- Skip this ignored target
+                -- V43 Target Identification Logic
+                local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
+                local targetKey = nil
+                
+                if targetPart then -- Only proceed if we have a valid part
+                    local parentModel = targetPart.Parent
+                    local humanoid = parentModel:FindFirstChildOfClass("Humanoid")
+
+                    if humanoid then
+                        -- It's a mob. The key is *always* the Model (the parent).
+                        targetKey = parentModel
+                    else
+                        -- It's a resource (or something else). The key is the part itself.
+                        targetKey = targetPart
+                    end
                 end
 
-                local dist = (targetPart.Position - position).Magnitude
-                
-                if dist < searchRadius and dist < minDistance then
-                    minDistance = dist
-                    closestTargetPart = targetPart -- Store the HRP/Part for teleporting
-                    closestTargetKey = targetKey -- Store the identifier key separately
+                if targetPart and targetKey and targetPart.Position and targetPart.Parent ~= LocalPlayer.Character then
+                    
+                    -- Check if this specific target identifier is in the ignored list
+                    if self.IgnoredTargets[targetKey] then
+                        continue -- Skip this ignored target
+                    end
+
+                    local dist = (targetPart.Position - position).Magnitude
+                    
+                    if dist < searchRadius and dist < minDistance then
+                        minDistance = dist
+                        closestTargetPart = targetPart -- Store the HRP/Part for teleporting
+                        closestTargetKey = targetKey -- Store the identifier key separately
+                    end
                 end
             end
         end
@@ -237,7 +230,13 @@ function MultiGrinder:findClosestTarget(position, names)
     return closestTargetPart, closestTargetKey
 end
 
--- NEW (V4ANOM: Find ANY mob (not by name) in a specific radius
+-- NEW (V45): Find ANY mob (not by name) in a specific radius
+function MultiGrinder:findClosestMobInArea(position, radius)
+    local closestTargetPart = nil
+    local closestTargetKey = nil
+    local minDistance = math.huge
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Humanoid") and obj.Health > 0 then
             local parentModel = obj.Parent
             if parentModel and parentModel ~= LocalPlayer.Character then
@@ -334,7 +333,7 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
             self:updateGUI()
         else
             -- 4b. No mob found, update scan timer
-            self.PriorityAreaScanTimer = self.PriorityAreaScanTimer + (self.Mode == "Mining" and CONFIG.MiningSpeed or CONFIG.FarmSpeed) -- Use correct speed
+            self.PriorityAreaScanTimer = self.PriorityAreaScanTimer + CONFIG.FarmSpeed
             
             if self.PriorityAreaScanTimer >= 3 then
                 -- 5. Scan time elapsed, move to next area
@@ -573,7 +572,7 @@ function MultiGrinder:executeMiningAction(hrp)
     local offset = CONFIG.Mining.TeleportOffset
     local resourcePos = resource.Position + offset
     
-    -- V44: Store last position before teleporting
+    -- V4Setting
     self.LastKnownPosition = hrp.Position
     
     hrp.CFrame = CFrame.new(resourcePos)
@@ -1153,7 +1152,7 @@ function MultiGrinder:setupGUI()
     local MTargetNamesInput = createTextBox(MiningPage, self.MiningTargetNames, "E.g., Iron, Rock, Gold")
     MTargetNamesInput.Name = "MTargetNamesInput"
     MTargetNamesInput.FocusLost:Connect(function(enterPressed)
-        self.MiningTargetNames = MTargetNamesInput.Text
+        self.MiningNames = MTargetNamesInput.Text
         self.CurrentTarget = nil 
         self.CurrentTargetIdentifier = nil -- V40
         print(string.format("[Multi-Bot Debug] Mining Targets updated: %s", self.MiningTargetNames))
@@ -1233,17 +1232,7 @@ function MultiGrinder:start()
     print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
     
     self.LoopThread = task.spawn(function()
-        -- CHANGED: The 'while' condition is moved inside
-        while true do
-            -- NEW: Dynamic loop wait time
-            local loopWaitTime = CONFIG.FarmSpeed -- Default speed
-            
-            if self.Enabled and self.Mode == "Mining" then
-                loopWaitTime = CONFIG.MiningSpeed -- Override with faster speed for mining
-            end
-            
-            task.wait(loopWaitTime) -- Wait for the determined duration
-            
+        while task.wait(CONFIG.FarmSpeed) do
             if self.Enabled then
                 local hrp = self:getHumanoidRootPart()
                 
