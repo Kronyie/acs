@@ -188,41 +188,47 @@ function MultiGrinder:findClosestTarget(position, names)
     local minDistance = math.huge
     local searchRadius = math.huge 
 
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        for _, name in ipairs(names) do
-            if string.lower(obj.Name) == string.lower(name) then 
-                
-                -- V43 Target Identification Logic
-                local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
-                local targetKey = nil
-                
-                if targetPart then -- Only proceed if we have a valid part
-                    local parentModel = targetPart.Parent
-                    local humanoid = parentModel:FindFirstChildOfClass("Humanoid")
+    -- OPTIMIZATION: Convert the list of names into a Set (table) for O(1) lookups.
+    -- This is much faster than looping through the 'names' list for every object in the game.
+    local targetNamesSet = {}
+    for _, name in ipairs(names) do
+        targetNamesSet[string.lower(name)] = true
+    end
 
-                    if humanoid then
-                        -- It's a mob. The key is *always* the Model (the parent).
-                        targetKey = parentModel
-                    else
-                        -- It's a resource (or something else). The key is the part itself.
-                        targetKey = targetPart
-                    end
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        -- OPTIMIZATION: Check if the object's name is in our Set.
+        if targetNamesSet[string.lower(obj.Name)] then 
+            
+            -- V43 Target Identification Logic
+            local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
+            local targetKey = nil
+            
+            if targetPart then -- Only proceed if we have a valid part
+                local parentModel = targetPart.Parent
+                local humanoid = parentModel:FindFirstChildOfClass("Humanoid")
+
+                if humanoid then
+                    -- It's a mob. The key is *always* the Model (the parent).
+                    targetKey = parentModel
+                else
+                    -- It's a resource (or something else). The key is the part itself.
+                    targetKey = targetPart
+                end
+            end
+
+            if targetPart and targetKey and targetPart.Position and targetPart.Parent ~= LocalPlayer.Character then
+                
+                -- Check if this specific target identifier is in the ignored list
+                if self.IgnoredTargets[targetKey] then
+                    continue -- Skip this ignored target
                 end
 
-                if targetPart and targetKey and targetPart.Position and targetPart.Parent ~= LocalPlayer.Character then
-                    
-                    -- Check if this specific target identifier is in the ignored list
-                    if self.IgnoredTargets[targetKey] then
-                        continue -- Skip this ignored target
-                    end
-
-                    local dist = (targetPart.Position - position).Magnitude
-                    
-                    if dist < searchRadius and dist < minDistance then
-                        minDistance = dist
-                        closestTargetPart = targetPart -- Store the HRP/Part for teleporting
-                        closestTargetKey = targetKey -- Store the identifier key separately
-                    end
+                local dist = (targetPart.Position - position).Magnitude
+                
+                if dist < searchRadius and dist < minDistance then
+                    minDistance = dist
+                    closestTargetPart = targetPart -- Store the HRP/Part for teleporting
+                    closestTargetKey = targetKey -- Store the identifier key separately
                 end
             end
         end
@@ -231,13 +237,7 @@ function MultiGrinder:findClosestTarget(position, names)
     return closestTargetPart, closestTargetKey
 end
 
--- NEW (V45): Find ANY mob (not by name) in a specific radius
-function MultiGrinder:findClosestMobInArea(position, radius)
-    local closestTargetPart = nil
-    local closestTargetKey = nil
-    local minDistance = math.huge
-
-    for _, obj in ipairs(Workspace:GetDescendants()) do
+-- NEW (V4ANOM: Find ANY mob (not by name) in a specific radius
         if obj:IsA("Humanoid") and obj.Health > 0 then
             local parentModel = obj.Parent
             if parentModel and parentModel ~= LocalPlayer.Character then
