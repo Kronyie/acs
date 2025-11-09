@@ -15,7 +15,7 @@ MultiGrinder.__index = MultiGrinder
 local CONFIG = {
     ScriptName = "Studlands (V47)", 
     DefaultMode = "Combat", 
-    FarmSpeed = 0.5, -- EDITED: Was 0.05 (20x/sec). Changed to 0.25 (4x/sec) to reduce lag.
+    FarmSpeed = 0.20, -- EDITED: Was 0.05 (20x/sec). Changed to 0.25 (4x/sec) to reduce lag.
     
     -- UI Dimensions (Unchanged)
     FrameWidth = 260, 
