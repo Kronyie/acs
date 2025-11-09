@@ -15,7 +15,7 @@ MultiGrinder.__index = MultiGrinder
 local CONFIG = {
     ScriptName = "Studlands (V47)", 
     DefaultMode = "Combat", 
-    FarmSpeed = 0.25, -- EDITED: Was 0.05 (20x/sec). Changed to 0.25 (4x/sec) to reduce lag.
+    FarmSpeed = 0.20, -- EDITED: Was 0.05 (20x/sec). Changed to 0.25 (4x/sec) to reduce lag.
     
     -- UI Dimensions (Unchanged)
     FrameWidth = 260, 
@@ -51,7 +51,7 @@ local CONFIG = {
 
     Mining = {
         ToolName = "Eternium Pickaxe",
-        TargetNames = {"Iron", "Rock", "Blood Stone", "Gold", "Salt Rock"},
+        TargetNames = {"Ore"},
         TeleportOffset = Vector3.new(0, 5, 2), 
     },
 }
