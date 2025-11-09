@@ -1,39 +1,3 @@
---[[
-  Refactored Multi-Bot (V47 - Missing Function Fix)
-
-  *** V47 FIX ***
-  - Restored the `executeCombatAction` function that was accidentally
-    removed in a previous diff, fixing the "missing method" error.
-  - Cleaned up duplicate code from the V46 diff.
-
-  *** V46 FIX ***
-  - Modified "Priority Area" combat logic.
-  - The bot will now teleport directly to the mob it finds *within* the area,
-    using the standard combat offset.
-  - This fixes mobs walking away before they can be hit.
-
-  *** V45 NEW FEATURE ***
-  - Added "Priority Area" farming system.
-  - Located in the "Combat" tab.
-  - "Priority Areas: ON/OFF": Toggles the system.
-  - "Add Current Position as Area": Saves your current CFrame as a priority spot (max 20).
-  - "Clear Last Area": Removes the most recently added area.
-  - "Areas: 0/20": Shows how many areas are saved.
-  - LOGIC:
-    - When ON, this system OVERRIDES normal farming.
-    - The bot will teleport to Priority Area #1.
-    - It will scan for 3 seconds for ANY mob (not just target list) within 50 studs.
-    - If a mob is found, it teleports to it and attacks it.
-    - If no mob is found after 3 seconds, it moves to Priority Area #2, and so on.
-    - After the last area, it loops back to Area #1.
-
-  *** V44 NEW FEATURE ***
-  - Added "TP on Respawn: ON/OFF" toggle button to the General tab (ON by default).
-  
---]]
-
--- LAG REDUCTION EDIT: FarmSpeed set to 0.25 (4x/sec) to reduce lag.
-
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then return end
@@ -52,6 +16,7 @@ local CONFIG = {
     ScriptName = "Studlands (V47)", 
     DefaultMode = "Combat", 
     FarmSpeed = 0.25, -- EDITED: Was 0.05 (20x/sec). Changed to 0.25 (4x/sec) to reduce lag.
+    MiningSpeed = 0.05, -- NEW: Faster loop interval for Mining TP/Action
     
     -- UI Dimensions (Unchanged)
     FrameWidth = 260, 
@@ -369,7 +334,7 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
             self:updateGUI()
         else
             -- 4b. No mob found, update scan timer
-            self.PriorityAreaScanTimer = self.PriorityAreaScanTimer + CONFIG.FarmSpeed
+            self.PriorityAreaScanTimer = self.PriorityAreaScanTimer + (self.Mode == "Mining" and CONFIG.MiningSpeed or CONFIG.FarmSpeed) -- Use correct speed
             
             if self.PriorityAreaScanTimer >= 3 then
                 -- 5. Scan time elapsed, move to next area
@@ -1268,7 +1233,17 @@ function MultiGrinder:start()
     print("[Multi-Bot Debug] GUI Initialized. Starting main loop.")
     
     self.LoopThread = task.spawn(function()
-        while task.wait(CONFIG.FarmSpeed) do
+        -- CHANGED: The 'while' condition is moved inside
+        while true do
+            -- NEW: Dynamic loop wait time
+            local loopWaitTime = CONFIG.FarmSpeed -- Default speed
+            
+            if self.Enabled and self.Mode == "Mining" then
+                loopWaitTime = CONFIG.MiningSpeed -- Override with faster speed for mining
+            end
+            
+            task.wait(loopWaitTime) -- Wait for the determined duration
+            
             if self.Enabled then
                 local hrp = self:getHumanoidRootPart()
                 
