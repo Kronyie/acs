@@ -13,7 +13,7 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V49)", -- V49: UI Scroll & Radius Viz
+    ScriptName = "Studlands (V50)", -- V50: Race Condition Fix
     DefaultMode = "Combat", 
     FarmSpeed = 0.20, 
     
@@ -21,7 +21,7 @@ local CONFIG = {
     FrameWidth = 260, 
     TitleBarHeight = 35, 
     TabBarHeight = 30, 
-    ContentAreaHeight = 250, -- V49: Increased height for new button
+    ContentAreaHeight = 250, 
     MainFrameCornerRadius = 10,
     ButtonHeight = 30, 
     ButtonCornerRadius = 8,
@@ -124,10 +124,13 @@ function MultiGrinder:new()
         MiningPriorityAreaTarget = nil,
         MiningPriorityAreaScanRadius = CONFIG.Mining.MiningPriorityAreaScanRadius,
         
-        -- NEW (V49): Radius Visualizer
+        -- V49: Radius Visualizer
         ShowRadiusVisualizer = false,
         RadiusVisualizerPart = nil,
         RenderStepConnection = nil,
+
+        -- NEW (V50): Flag to prevent spawn race condition
+        HasSpawnedOnce = false,
 
         -- Persistent GUI State
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
@@ -135,11 +138,17 @@ function MultiGrinder:new()
         
     }, MultiGrinder)
 
-    -- V49: Updated height
     self.InitialFrameHeight = CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight
     
     LocalPlayer.CharacterAdded:Connect(function(character)
         task.wait(0.5) 
+
+        -- NEW (V50): Prevent this from running on the *first* spawn
+        -- to avoid a race condition with the main start() function.
+        if not self.HasSpawnedOnce then
+            self.HasSpawnedOnce = true
+            return 
+        end
 
         if self.Enabled and self.TeleportOnRespawnEnabled and self.LastKnownPosition then
             print("[Multi-Bot Debug] Teleporting back to last known position after respawn.")
@@ -163,7 +172,7 @@ function MultiGrinder:new()
         if not playerGui:FindFirstChild("MultiBotGui") then
             print("[Multi-Bot Debug] GUI missing after respawn, re-initializing GUI and restoring state.")
             self:setupGUI()
-            self:updateGUI() 
+            -- V50: Removed redundant updateGUI() call. setupGUI() already handles this.
         end
     end)
 
@@ -336,7 +345,7 @@ local function restoreCamera(self)
     end
 end
 
--- NEW (V49): Radius Visualizer Logic
+-- V49: Radius Visualizer Logic
 function MultiGrinder:updateRadiusVisualizer()
     -- This function runs every frame, so it's efficient.
     local hrp = self:getHumanoidRootPart()
