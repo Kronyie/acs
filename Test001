@@ -13,7 +13,7 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V48)", -- V48: Priority Mining
+    ScriptName = "Studlands (V48.2 Scroll+Block)", -- V48: Priority Mining
     DefaultMode = "Combat", 
     FarmSpeed = 0.20, 
     
@@ -21,7 +21,7 @@ local CONFIG = {
     FrameWidth = 260, 
     TitleBarHeight = 35, 
     TabBarHeight = 30, 
-    ContentAreaHeight = 220, 
+    ContentAreaHeight = 220, -- This now acts as the default/min height for the frame
     MainFrameCornerRadius = 10,
     ButtonHeight = 30, 
     ButtonCornerRadius = 8,
@@ -63,6 +63,7 @@ local function getRemotes()
     
     remotes.EquipItem = remotesContainer:WaitForChild("EquipItem", 5) 
     remotes.UseItem = remotesContainer:WaitForChild("UseItem", 5) 
+    remotes.Block = remotesContainer:WaitForChild("Block", 5) -- ADDED: Auto-Block remote
 
     if remotes.EquipItem then
         print("[Multi-Bot Debug] Remote EquipItem FOUND.")
@@ -74,6 +75,12 @@ local function getRemotes()
         print("[Multi-Bot Debug] Remote UseItem FOUND. Using direct fire bypass.")
     else
         warn("[Multi-Bot Debug] Remote: CRITICAL - UseItem remote not found. Bot will likely fail.")
+    end
+
+    if remotes.Block then
+        print("[Multi-Bot Debug] Remote Block FOUND.")
+    else
+        warn("[Multi-Bot Debug] Remote: WARNING - Block remote not found. Auto-block will not work.")
     end
 
     return remotes
@@ -107,6 +114,7 @@ function MultiGrinder:new()
         
         LastKnownPosition = nil,
         TeleportOnRespawnEnabled = true,
+        AutoBlockEnabled = false, -- ADDED: Auto-Block state
 
         -- V45: Combat Priority Area state
         PriorityAreas = {}, 
@@ -754,6 +762,7 @@ function MultiGrinder:updateGUI()
     local ignoreButton = self.MainGui.GeneralPage.IgnoreButton 
     local autoIgnoreButton = self.MainGui.GeneralPage.AutoIgnoreButton 
     local tpRespawnButton = self.MainGui.GeneralPage.TeleportOnRespawnButton 
+    local autoBlockButton = self.MainGui.GeneralPage.AutoBlockButton -- ADDED: Auto-Block
     
     if self.Enabled then
         toggleButton.Text = "ON"
@@ -793,6 +802,15 @@ function MultiGrinder:updateGUI()
     else
         tpRespawnButton.Text = "TP on Respawn: OFF"
         tpRespawnButton.BackgroundColor3 = CONFIG.ToggleOffColor
+    end
+
+    -- ADDED: Auto-Block GUI update
+    if self.AutoBlockEnabled then
+        autoBlockButton.Text = "Auto-Block: ON"
+        autoBlockButton.BackgroundColor3 = CONFIG.ToggleOnColor
+    else
+        autoBlockButton.Text = "Auto-Block: OFF"
+        autoBlockButton.BackgroundColor3 = CONFIG.ToggleOffColor
     end
 
     local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
@@ -853,7 +871,16 @@ function MultiGrinder:showTab(tabName)
     end
     
     if self.MainGui.Pages[tabName] then
-        self.MainGui.Pages[tabName].Visible = true
+        local page = self.MainGui.Pages[tabName]
+        page.Visible = true
+        
+        -- CHANGED: Update CanvasSize for ScrollingFrame
+        task.wait() -- Allow layout to update
+        local layout = page:FindFirstChildOfClass("UIListLayout")
+        if layout then
+            contentContainer.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 10) -- 10px padding
+        end
+        contentContainer.CanvasPosition = Vector2.new(0,0) -- Scroll to top
     end
 end
 
@@ -912,8 +939,11 @@ end
 local function createContentPage(parent, name)
     local page = Instance.new("Frame")
     page.Name = name .. "Page"
-    page.Size = UDim2.new(1, 0, 1, 0)
-    page.BackgroundTransparency = 1 
+    -- CHANGED: Use AutomaticSize for height
+    page.Size = UDim2.new(1, 0, 0, 0) 
+    page.AutomaticSize = Enum.AutomaticSize.Y
+    page.BackgroundColor3 = CONFIG.BackgroundColor -- CHANGED: Page has background
+    page.BackgroundTransparency = 0
     page.Visible = false
     page.Parent = parent
     return page
@@ -1055,13 +1085,18 @@ function MultiGrinder:setupGUI()
         Tabs[tabName] = tabButton
     end
     
-    local ContentContainer = Instance.new("Frame")
+    -- CHANGED: ContentContainer is now a ScrollingFrame
+    local ContentContainer = Instance.new("ScrollingFrame")
     ContentContainer.Name = "ContentContainer"
     ContentContainer.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight + CONFIG.TabBarHeight) 
     ContentContainer.Size = UDim2.new(1, 0, 1, -(CONFIG.TitleBarHeight + CONFIG.TabBarHeight))
     ContentContainer.BackgroundColor3 = CONFIG.BackgroundColor
     ContentContainer.Parent = MainFrame
     ContentContainer.BorderSizePixel = 0
+    ContentContainer.BackgroundTransparency = 1 -- Pages will show background
+    ContentContainer.ScrollBarImageColor3 = CONFIG.AccentColor
+    ContentContainer.ScrollBarThickness = 6
+    ContentContainer.CanvasSize = UDim2.new(0, 0, 0, 0) -- Will be updated by showTab
     
     local Pages = {}
 
@@ -1176,6 +1211,15 @@ function MultiGrinder:setupGUI()
         self.TeleportOnRespawnEnabled = not self.TeleportOnRespawnEnabled
         self:updateGUI()
         print(string.format("[Multi-Bot Debug] Teleport on Respawn Toggled: %s", self.TeleportOnRespawnEnabled and "ON" or "OFF"))
+    end)
+
+    -- ADDED: Auto-Block button
+    local AutoBlockButton = createButton(GeneralPage, "Auto-Block: OFF", CONFIG.ToggleOffColor)
+    AutoBlockButton.Name = "AutoBlockButton"
+    AutoBlockButton.MouseButton1Click:Connect(function()
+        self.AutoBlockEnabled = not self.AutoBlockEnabled
+        self:updateGUI()
+        print(string.format("[Multi-Bot Debug] Auto-Block Toggled: %s", self.AutoBlockEnabled and "ON" or "OFF"))
     end)
 
 
@@ -1413,6 +1457,7 @@ function MultiGrinder:setupGUI()
             ClearIgnoreButton = ClearIgnoreButton, 
             AutoIgnoreButton = AutoIgnoreButton, 
             TeleportOnRespawnButton = TeleportOnRespawnButton, 
+            AutoBlockButton = AutoBlockButton, -- ADDED: Auto-Block
         },
         CombatPage = {
             ToolNameInput = CToolNameInput,
@@ -1458,6 +1503,15 @@ function MultiGrinder:start()
     
     self.LoopThread = task.spawn(function()
         while task.wait(CONFIG.FarmSpeed) do
+            
+            -- ADDED: Auto-Block logic, runs independently of main farm
+            if self.AutoBlockEnabled and self.Remotes.Block then
+                local args = { true }
+                pcall(function() -- Wrap in pcall for safety
+                    self.Remotes.Block:FireServer(unpack(args))
+                end)
+            end
+
             if self.Enabled then
                 local hrp = self:getHumanoidRootPart()
                 
