@@ -4,6 +4,7 @@ if not LocalPlayer then return end
 local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService") -- ADDED: For JSON encoding
 local Camera = Workspace.CurrentCamera
 local Mouse = LocalPlayer:GetMouse() 
 
@@ -13,7 +14,7 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V48.2 Scroll+Block)", -- V48: Priority Mining
+    ScriptName = "Studlands (V48.4 Settings)", -- V48.4: Adjustable Scan Time
     DefaultMode = "Combat", 
     FarmSpeed = 0.20, 
     
@@ -46,14 +47,16 @@ local CONFIG = {
         ToolName = "Unstable Cylindery Hammer", 
         TargetNames = {"Crab Champion"}, 
         TeleportOffset = Vector3.new(0, 5, 5), 
-        CombatPriorityAreaScanRadius = 50, -- V48: Renamed and made adjustable
+        CombatPriorityAreaScanRadius = 50, 
+        CombatPriorityAreaScanTime = 3, -- NEW (V48.4): Adjustable scan time
     },
 
     Mining = {
         ToolName = "Eternium Pickaxe",
         TargetNames = {"Ore"},
         TeleportOffset = Vector3.new(0, 5, 2), 
-        MiningPriorityAreaScanRadius = 30, -- NEW (V48): Adjustable scan radius for mining
+        MiningPriorityAreaScanRadius = 30, 
+        MiningPriorityAreaScanTime = 3, -- NEW (V48.4): Adjustable scan time
     },
 }
 
@@ -93,6 +96,8 @@ function MultiGrinder:new()
         Enabled = false, 
         Mode = CONFIG.DefaultMode,
         Remotes = getRemotes(),
+        HttpService = HttpService, -- ADDED: Service
+        SettingsFile = "MultiBot_Settings.json", -- ADDED: Filename
         MainGui = nil,
         CurrentTab = "General", 
         
@@ -122,7 +127,8 @@ function MultiGrinder:new()
         CurrentPriorityAreaIndex = 1,
         PriorityAreaScanTimer = 0,
         PriorityAreaTarget = nil, 
-        CombatPriorityAreaScanRadius = CONFIG.Combat.CombatPriorityAreaScanRadius, -- V48: Now state variable
+        CombatPriorityAreaScanRadius = CONFIG.Combat.CombatPriorityAreaScanRadius,
+        CombatPriorityAreaScanTime = CONFIG.Combat.CombatPriorityAreaScanTime, -- NEW (V48.4)
 
         -- NEW (V48): Mining Priority Area state
         MiningPriorityAreas = {},
@@ -131,6 +137,7 @@ function MultiGrinder:new()
         MiningPriorityAreaScanTimer = 0,
         MiningPriorityAreaTarget = nil,
         MiningPriorityAreaScanRadius = CONFIG.Mining.MiningPriorityAreaScanRadius,
+        MiningPriorityAreaScanTime = CONFIG.Mining.MiningPriorityAreaScanTime, -- NEW (V48.4)
 
         -- Persistent GUI State
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
@@ -140,6 +147,8 @@ function MultiGrinder:new()
 
     self.InitialFrameHeight = CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight
     
+    self:LoadSettings() -- ADDED: Load settings on initialization
+
     LocalPlayer.CharacterAdded:Connect(function(character)
         task.wait(0.5) 
 
@@ -375,13 +384,15 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
         else
             self.PriorityAreaScanTimer = self.PriorityAreaScanTimer + CONFIG.FarmSpeed
             
-            if self.PriorityAreaScanTimer >= 3 then
+            -- CHANGED (V48.4): Use state variable for scan time
+            if self.PriorityAreaScanTimer >= self.CombatPriorityAreaScanTime then
                 self.PriorityAreaScanTimer = 0
                 self.CurrentPriorityAreaIndex = self.CurrentPriorityAreaIndex + 1
                 if self.CurrentPriorityAreaIndex > #self.PriorityAreas then
                     self.CurrentPriorityAreaIndex = 1 
                 end
-                print(string.format("[Multi-Bot Debug] 3s scan complete. Moving to Priority Area #%d", self.CurrentPriorityAreaIndex))
+                -- CHANGED (V48.4): Updated print message
+                print(string.format("[Multi-Bot Debug] %.1fs scan complete. Moving to Priority Area #%d", self.CombatPriorityAreaScanTime, self.CurrentPriorityAreaIndex))
                 self:updateGUI()
             end
             
@@ -580,14 +591,16 @@ function MultiGrinder:executePriorityAreaMining(hrp)
             -- 4b. No resource found, update scan timer
             self.MiningPriorityAreaScanTimer = self.MiningPriorityAreaScanTimer + CONFIG.FarmSpeed
             
-            if self.MiningPriorityAreaScanTimer >= 3 then
+            -- CHANGED (V48.4): Use state variable for scan time
+            if self.MiningPriorityAreaScanTimer >= self.MiningPriorityAreaScanTime then
                 -- 5. Scan time elapsed, move to next area
                 self.MiningPriorityAreaScanTimer = 0
                 self.CurrentMiningPriorityAreaIndex = self.CurrentMiningPriorityAreaIndex + 1
                 if self.CurrentMiningPriorityAreaIndex > #self.MiningPriorityAreas then
                     self.CurrentMiningPriorityAreaIndex = 1 -- Loop back to start
                 end
-                print(string.format("[Multi-Bot Debug] 3s scan complete. Moving to Mining Priority Area #%d", self.CurrentMiningPriorityAreaIndex))
+                -- CHANGED (V48.4): Updated print message
+                print(string.format("[Multi-Bot Debug] %.1fs scan complete. Moving to Mining Priority Area #%d", self.MiningPriorityAreaScanTime, self.CurrentMiningPriorityAreaIndex))
                 self:updateGUI()
             end
             
@@ -726,6 +739,173 @@ function MultiGrinder:executeMiningAction(hrp)
     
     return true
 end
+
+-- ADDED: SETTINGS SAVE/LOAD FUNCTIONS
+
+function MultiGrinder:SaveSettings()
+    local settings = {
+        CombatToolName = self.CombatToolName,
+        CombatTargetNames = self.CombatTargetNames,
+        CombatPriorityAreaScanRadius = self.CombatPriorityAreaScanRadius,
+        CombatPriorityAreaScanTime = self.CombatPriorityAreaScanTime, -- NEW (V48.4)
+        PriorityAreaEnabled = self.PriorityAreaEnabled,
+        
+        MiningToolName = self.MiningToolName,
+        MiningTargetNames = self.MiningTargetNames,
+        MiningPriorityAreaScanRadius = self.MiningPriorityAreaScanRadius,
+        MiningPriorityAreaScanTime = self.MiningPriorityAreaScanTime, -- NEW (V48.4)
+        MiningPriorityAreaEnabled = self.MiningPriorityAreaEnabled,
+        
+        AutoIgnoreEnabled = self.AutoIgnoreEnabled,
+        TeleportOnRespawnEnabled = self.TeleportOnRespawnEnabled,
+        AutoBlockEnabled = self.AutoBlockEnabled,
+        
+        PriorityAreas = {},
+        MiningPriorityAreas = {},
+        UIPos = {}
+    }
+
+    -- Serialize CFrames
+    for _, cf in ipairs(self.PriorityAreas) do
+        table.insert(settings.PriorityAreas, {cf:GetComponents()})
+    end
+    
+    for _, cf in ipairs(self.MiningPriorityAreas) do
+        table.insert(settings.MiningPriorityAreas, {cf:GetComponents()})
+    end
+
+    -- Get current UI position
+    if self.MainGui and self.MainGui.MainFrame then
+        self.UIPosition = self.MainGui.MainFrame.Position
+    end
+    
+    settings.UIPos = {
+        XScale = self.UIPosition.X.Scale,
+        XOffset = self.UIPosition.X.Offset,
+        YScale = self.UIPosition.Y.Scale,
+        YOffset = self.UIPosition.Y.Offset,
+    }
+
+    local success, result = pcall(self.HttpService.JSONEncode, self.HttpService, settings)
+
+    if success then
+        writefile(self.SettingsFile, result)
+        print("[Multi-Bot Debug] Settings saved.")
+    else
+        warn("[Multi-Bot Debug] FAILED to encode settings: " .. tostring(result))
+    end
+end
+
+function MultiGrinder:LoadSettings()
+    if not isfile(self.SettingsFile) then
+        print("[Multi-Bot Debug] No settings file found. Using defaults.")
+        return
+    end
+
+    local success, jsonData = pcall(readfile, self.SettingsFile)
+    if not success then
+        warn("[Multi-Bot Debug] FAILED to read settings file: " .. tostring(jsonData))
+        return
+    end
+
+    local success, settings = pcall(self.HttpService.JSONDecode, self.HttpService, jsonData)
+    if not success or typeof(settings) ~= "table" then
+        warn("[Multi-Bot Debug] FAILED to decode settings file. File may be corrupt. " .. tostring(settings))
+        return
+    end
+
+    -- Load settings with defaults as fallback
+    self.CombatToolName = settings.CombatToolName or self.CombatToolName
+    self.CombatTargetNames = settings.CombatTargetNames or self.CombatTargetNames
+    self.CombatPriorityAreaScanRadius = settings.CombatPriorityAreaScanRadius or self.CombatPriorityAreaScanRadius
+    self.CombatPriorityAreaScanTime = settings.CombatPriorityAreaScanTime or self.CombatPriorityAreaScanTime -- NEW (V48.4)
+    self.PriorityAreaEnabled = settings.PriorityAreaEnabled or self.PriorityAreaEnabled
+    
+    self.MiningToolName = settings.MiningToolName or self.MiningToolName
+    self.MiningTargetNames = settings.MiningTargetNames or self.MiningTargetNames
+    self.MiningPriorityAreaScanRadius = settings.MiningPriorityAreaScanRadius or self.MiningPriorityAreaScanRadius
+    self.MiningPriorityAreaScanTime = settings.MiningPriorityAreaScanTime or self.MiningPriorityAreaScanTime -- NEW (V48.4)
+    self.MiningPriorityAreaEnabled = settings.MiningPriorityAreaEnabled or self.MiningPriorityAreaEnabled
+    
+    self.AutoIgnoreEnabled = settings.AutoIgnoreEnabled or false -- Default to false if nil
+    self.TeleportOnRespawnEnabled = settings.TeleportOnRespawnEnabled or false -- Default to false if nil
+    self.AutoBlockEnabled = settings.AutoBlockEnabled or false -- Default to false if nil
+
+    -- Deserialize CFrames
+    if settings.PriorityAreas then
+        self.PriorityAreas = {}
+        for _, components in ipairs(settings.PriorityAreas) do
+            table.insert(self.PriorityAreas, CFrame.new(unpack(components)))
+        end
+    end
+    
+    if settings.MiningPriorityAreas then
+        self.MiningPriorityAreas = {}
+        for _, components in ipairs(settings.MiningPriorityAreas) do
+            table.insert(self.MiningPriorityAreas, CFrame.new(unpack(components)))
+        end
+    end
+
+    -- Deserialize UI Position
+    if settings.UIPos then
+        self.UIPosition = UDim2.new(
+            settings.UIPos.XScale or 0.5,
+            settings.UIPos.XOffset or -CONFIG.FrameWidth/2,
+            settings.UIPos.YScale or 0.5,
+            settings.UIPos.YOffset or -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)
+        )
+    end
+    
+    print("[Multi-Bot Debug] Settings loaded successfully.")
+end
+
+function MultiGrinder:ResetSettings()
+    -- Reset state variables to CONFIG defaults
+    self.CombatToolName = CONFIG.Combat.ToolName
+    self.CombatTargetNames = table.concat(CONFIG.Combat.TargetNames, ", ")
+    self.CombatPriorityAreaScanRadius = CONFIG.Combat.CombatPriorityAreaScanRadius
+    self.CombatPriorityAreaScanTime = CONFIG.Combat.CombatPriorityAreaScanTime -- NEW (V48.4)
+    self.PriorityAreaEnabled = false
+    
+    self.MiningToolName = CONFIG.Mining.ToolName
+    self.MiningTargetNames = table.concat(CONFIG.Mining.TargetNames, ", ")
+    self.MiningPriorityAreaScanRadius = CONFIG.Mining.MiningPriorityAreaScanRadius
+    self.MiningPriorityAreaScanTime = CONFIG.Mining.MiningPriorityAreaScanTime -- NEW (V48.4)
+    self.MiningPriorityAreaEnabled = false
+    
+    self.AutoIgnoreEnabled = true
+    self.TeleportOnRespawnEnabled = true
+    self.AutoBlockEnabled = false
+    
+    self.PriorityAreas = {}
+    self.MiningPriorityAreas = {}
+    
+    self.UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2))
+    if self.MainGui and self.MainGui.MainFrame then
+        self.MainGui.MainFrame.Position = self.UIPosition
+    end
+
+    -- Delete the settings file
+    pcall(delfile, self.SettingsFile)
+    
+    -- Update GUI textboxes
+    if self.MainGui then
+        self.MainGui.CombatPage.ToolNameInput.Text = self.CombatToolName
+        self.MainGui.CombatPage.TargetNamesInput.Text = self.CombatTargetNames
+        self.MainGui.CombatPage.CombatPriorityRadiusInput.Text = self.CombatPriorityAreaScanRadius
+        self.MainGui.CombatPage.CombatPriorityScanTimeInput.Text = self.CombatPriorityAreaScanTime -- NEW (V48.4)
+        
+        self.MainGui.MiningPage.ToolNameInput.Text = self.MiningToolName
+        self.MainGui.MiningPage.TargetNamesInput.Text = self.MiningTargetNames
+        self.MainGui.MiningPage.MiningPriorityRadiusInput.Text = self.MiningPriorityAreaScanRadius
+        self.MainGui.MiningPage.MiningPriorityScanTimeInput.Text = self.MiningPriorityAreaScanTime -- NEW (V48.4)
+        
+        self:updateGUI() -- Update toggles
+    end
+    
+    print("[Multi-Bot Debug] All settings have been reset to default.")
+end
+
 
 -- GUI LOGIC & COMPONENTS
 
@@ -1222,6 +1402,19 @@ function MultiGrinder:setupGUI()
         print(string.format("[Multi-Bot Debug] Auto-Block Toggled: %s", self.AutoBlockEnabled and "ON" or "OFF"))
     end)
 
+    -- ADDED: Save/Reset Buttons
+    local SaveSettingsButton = createButton(GeneralPage, "Save Settings", CONFIG.AccentColor)
+    SaveSettingsButton.Name = "SaveSettingsButton"
+    SaveSettingsButton.MouseButton1Click:Connect(function()
+        self:SaveSettings()
+    end)
+    
+    local ResetSettingsButton = createButton(GeneralPage, "Reset All Settings", Color3.fromRGB(220, 120, 0)) -- Orange
+    ResetSettingsButton.Name = "ResetSettingsButton"
+    ResetSettingsButton.MouseButton1Click:Connect(function()
+        self:ResetSettings()
+    end)
+
 
     Pages["General"] = GeneralPage
     
@@ -1262,6 +1455,20 @@ function MultiGrinder:setupGUI()
             print(string.format("[Multi-Bot Debug] Combat Scan Radius updated: %d", self.CombatPriorityAreaScanRadius))
         else
             CPriorityRadiusInput.Text = tostring(self.CombatPriorityAreaScanRadius) -- Reset to old value
+        end
+    end)
+
+    -- NEW (V48.4): Adjustable Scan Time
+    createInputLabel(CombatPage, "Priority Scan Time (sec):")
+    local CPriorityScanTimeInput = createTextBox(CombatPage, tostring(self.CombatPriorityAreaScanTime), "E.g., 3")
+    CPriorityScanTimeInput.Name = "CPriorityScanTimeInput"
+    CPriorityScanTimeInput.FocusLost:Connect(function(enterPressed)
+        local scanTime = tonumber(CPriorityScanTimeInput.Text)
+        if scanTime and scanTime > 0 then
+            self.CombatPriorityAreaScanTime = scanTime
+            print(string.format("[Multi-Bot Debug] Combat Scan Time updated: %.1f", self.CombatPriorityAreaScanTime))
+        else
+            CPriorityScanTimeInput.Text = tostring(self.CombatPriorityAreaScanTime) -- Reset to old value
         end
     end)
 
@@ -1369,6 +1576,20 @@ function MultiGrinder:setupGUI()
         end
     end)
 
+    -- NEW (V48.4): Adjustable Scan Time for Mining
+    createInputLabel(MiningPage, "Priority Scan Time (sec):")
+    local MPriorityScanTimeInput = createTextBox(MiningPage, tostring(self.MiningPriorityAreaScanTime), "E.g., 3")
+    MPriorityScanTimeInput.Name = "MPriorityScanTimeInput"
+    MPriorityScanTimeInput.FocusLost:Connect(function(enterPressed)
+        local scanTime = tonumber(MPriorityScanTimeInput.Text)
+        if scanTime and scanTime > 0 then
+            self.MiningPriorityAreaScanTime = scanTime
+            print(string.format("[Multi-Bot Debug] Mining Scan Time updated: %.1f", self.MiningPriorityAreaScanTime))
+        else
+            MPriorityScanTimeInput.Text = tostring(self.MiningPriorityAreaScanTime) -- Reset to old value
+        end
+    end)
+
     -- NEW (V48): Priority Area UI for Mining
     local MiningPriorityAreaToggleButton = createButton(MiningPage, "Priority Areas: OFF", CONFIG.ToggleOffColor, 25)
     MiningPriorityAreaToggleButton.Name = "MiningPriorityAreaToggleButton"
@@ -1458,6 +1679,8 @@ function MultiGrinder:setupGUI()
             AutoIgnoreButton = AutoIgnoreButton, 
             TeleportOnRespawnButton = TeleportOnRespawnButton, 
             AutoBlockButton = AutoBlockButton, -- ADDED: Auto-Block
+            SaveSettingsButton = SaveSettingsButton, -- ADDED
+            ResetSettingsButton = ResetSettingsButton -- ADDED
         },
         CombatPage = {
             ToolNameInput = CToolNameInput,
@@ -1466,7 +1689,8 @@ function MultiGrinder:setupGUI()
             AddPriorityAreaButton = AddPriorityAreaButton,
             ClearLastAreaButton = ClearLastAreaButton,
             PriorityAreaCountLabel = PriorityAreaCountLabel,
-            CombatPriorityRadiusInput = CPriorityRadiusInput, -- V48
+            CombatPriorityRadiusInput = CPriorityRadiusInput,
+            CombatPriorityScanTimeInput = CPriorityScanTimeInput, -- NEW (V4AR.4)
         },
         MiningPage = {
             ToolNameInput = MToolNameInput,
@@ -1477,6 +1701,7 @@ function MultiGrinder:setupGUI()
             MiningClearLastAreaButton = MiningClearLastAreaButton,
             MiningPriorityAreaCountLabel = MiningPriorityAreaCountLabel,
             MiningPriorityRadiusInput = MPriorityRadiusInput,
+            MiningPriorityScanTimeInput = MPriorityScanTimeInput, -- NEW (V48.4)
         }
     }
 
