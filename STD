@@ -4,6 +4,7 @@ if not LocalPlayer then return end
 local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService") -- ADDED: For JSON encoding
 local Camera = Workspace.CurrentCamera
 local Mouse = LocalPlayer:GetMouse() 
 
@@ -13,7 +14,7 @@ MultiGrinder.__index = MultiGrinder
 -- CONFIGURATION
 
 local CONFIG = {
-    ScriptName = "Studlands (V48)", -- V48: Priority Mining
+    ScriptName = "Studlands (V48.3 Settings)", -- V48: Priority Mining
     DefaultMode = "Combat", 
     FarmSpeed = 0.20, 
     
@@ -21,7 +22,7 @@ local CONFIG = {
     FrameWidth = 260, 
     TitleBarHeight = 35, 
     TabBarHeight = 30, 
-    ContentAreaHeight = 220, 
+    ContentAreaHeight = 220, -- This now acts as the default/min height for the frame
     MainFrameCornerRadius = 10,
     ButtonHeight = 30, 
     ButtonCornerRadius = 8,
@@ -63,6 +64,7 @@ local function getRemotes()
     
     remotes.EquipItem = remotesContainer:WaitForChild("EquipItem", 5) 
     remotes.UseItem = remotesContainer:WaitForChild("UseItem", 5) 
+    remotes.Block = remotesContainer:WaitForChild("Block", 5) -- ADDED: Auto-Block remote
 
     if remotes.EquipItem then
         print("[Multi-Bot Debug] Remote EquipItem FOUND.")
@@ -76,6 +78,12 @@ local function getRemotes()
         warn("[Multi-Bot Debug] Remote: CRITICAL - UseItem remote not found. Bot will likely fail.")
     end
 
+    if remotes.Block then
+        print("[Multi-Bot Debug] Remote Block FOUND.")
+    else
+        warn("[Multi-Bot Debug] Remote: WARNING - Block remote not found. Auto-block will not work.")
+    end
+
     return remotes
 end
 
@@ -86,6 +94,8 @@ function MultiGrinder:new()
         Enabled = false, 
         Mode = CONFIG.DefaultMode,
         Remotes = getRemotes(),
+        HttpService = HttpService, -- ADDED: Service
+        SettingsFile = "MultiBot_Settings.json", -- ADDED: Filename
         MainGui = nil,
         CurrentTab = "General", 
         
@@ -107,6 +117,7 @@ function MultiGrinder:new()
         
         LastKnownPosition = nil,
         TeleportOnRespawnEnabled = true,
+        AutoBlockEnabled = false, -- ADDED: Auto-Block state
 
         -- V45: Combat Priority Area state
         PriorityAreas = {}, 
@@ -132,6 +143,8 @@ function MultiGrinder:new()
 
     self.InitialFrameHeight = CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight
     
+    self:LoadSettings() -- ADDED: Load settings on initialization
+
     LocalPlayer.CharacterAdded:Connect(function(character)
         task.wait(0.5) 
 
@@ -719,6 +732,165 @@ function MultiGrinder:executeMiningAction(hrp)
     return true
 end
 
+-- ADDED: SETTINGS SAVE/LOAD FUNCTIONS
+
+function MultiGrinder:SaveSettings()
+    local settings = {
+        CombatToolName = self.CombatToolName,
+        CombatTargetNames = self.CombatTargetNames,
+        CombatPriorityAreaScanRadius = self.CombatPriorityAreaScanRadius,
+        PriorityAreaEnabled = self.PriorityAreaEnabled,
+        
+        MiningToolName = self.MiningToolName,
+        MiningTargetNames = self.MiningTargetNames,
+        MiningPriorityAreaScanRadius = self.MiningPriorityAreaScanRadius,
+        MiningPriorityAreaEnabled = self.MiningPriorityAreaEnabled,
+        
+        AutoIgnoreEnabled = self.AutoIgnoreEnabled,
+        TeleportOnRespawnEnabled = self.TeleportOnRespawnEnabled,
+        AutoBlockEnabled = self.AutoBlockEnabled,
+        
+        PriorityAreas = {},
+        MiningPriorityAreas = {},
+        UIPos = {}
+    }
+
+    -- Serialize CFrames
+    for _, cf in ipairs(self.PriorityAreas) do
+        table.insert(settings.PriorityAreas, {cf:GetComponents()})
+    end
+    
+    for _, cf in ipairs(self.MiningPriorityAreas) do
+        table.insert(settings.MiningPriorityAreas, {cf:GetComponents()})
+    end
+
+    -- Get current UI position
+    if self.MainGui and self.MainGui.MainFrame then
+        self.UIPosition = self.MainGui.MainFrame.Position
+    end
+    
+    settings.UIPos = {
+        XScale = self.UIPosition.X.Scale,
+        XOffset = self.UIPosition.X.Offset,
+        YScale = self.UIPosition.Y.Scale,
+        YOffset = self.UIPosition.Y.Offset,
+    }
+
+    local success, result = pcall(self.HttpService.JSONEncode, self.HttpService, settings)
+
+    if success then
+        writefile(self.SettingsFile, result)
+        print("[Multi-Bot Debug] Settings saved.")
+    else
+        warn("[Multi-Bot Debug] FAILED to encode settings: " .. tostring(result))
+    end
+end
+
+function MultiGrinder:LoadSettings()
+    if not isfile(self.SettingsFile) then
+        print("[Multi-Bot Debug] No settings file found. Using defaults.")
+        return
+    end
+
+    local success, jsonData = pcall(readfile, self.SettingsFile)
+    if not success then
+        warn("[Multi-Bot Debug] FAILED to read settings file: " .. tostring(jsonData))
+        return
+    end
+
+    local success, settings = pcall(self.HttpService.JSONDecode, self.HttpService, jsonData)
+    if not success or typeof(settings) ~= "table" then
+        warn("[Multi-Bot Debug] FAILED to decode settings file. File may be corrupt. " .. tostring(settings))
+        return
+    end
+
+    -- Load settings with defaults as fallback
+    self.CombatToolName = settings.CombatToolName or self.CombatToolName
+    self.CombatTargetNames = settings.CombatTargetNames or self.CombatTargetNames
+    self.CombatPriorityAreaScanRadius = settings.CombatPriorityAreaScanRadius or self.CombatPriorityAreaScanRadius
+    self.PriorityAreaEnabled = settings.PriorityAreaEnabled or self.PriorityAreaEnabled
+    
+    self.MiningToolName = settings.MiningToolName or self.MiningToolName
+    self.MiningTargetNames = settings.MiningTargetNames or self.MiningTargetNames
+    self.MiningPriorityAreaScanRadius = settings.MiningPriorityAreaScanRadius or self.MiningPriorityAreaScanRadius
+    self.MiningPriorityAreaEnabled = settings.MiningPriorityAreaEnabled or self.MiningPriorityAreaEnabled
+    
+    self.AutoIgnoreEnabled = settings.AutoIgnoreEnabled or false -- Default to false if nil
+    self.TeleportOnRespawnEnabled = settings.TeleportOnRespawnEnabled or false -- Default to false if nil
+    self.AutoBlockEnabled = settings.AutoBlockEnabled or false -- Default to false if nil
+
+    -- Deserialize CFrames
+    if settings.PriorityAreas then
+        self.PriorityAreas = {}
+        for _, components in ipairs(settings.PriorityAreas) do
+            table.insert(self.PriorityAreas, CFrame.new(unpack(components)))
+        end
+    end
+    
+    if settings.MiningPriorityAreas then
+        self.MiningPriorityAreas = {}
+        for _, components in ipairs(settings.MiningPriorityAreas) do
+            table.insert(self.MiningPriorityAreas, CFrame.new(unpack(components)))
+        end
+    end
+
+    -- Deserialize UI Position
+    if settings.UIPos then
+        self.UIPosition = UDim2.new(
+            settings.UIPos.XScale or 0.5,
+            settings.UIPos.XOffset or -CONFIG.FrameWidth/2,
+            settings.UIPos.YScale or 0.5,
+            settings.UIPos.YOffset or -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)
+        )
+    end
+    
+    print("[Multi-Bot Debug] Settings loaded successfully.")
+end
+
+function MultiGrinder:ResetSettings()
+    -- Reset state variables to CONFIG defaults
+    self.CombatToolName = CONFIG.Combat.ToolName
+    self.CombatTargetNames = table.concat(CONFIG.Combat.TargetNames, ", ")
+    self.CombatPriorityAreaScanRadius = CONFIG.Combat.CombatPriorityAreaScanRadius
+    self.PriorityAreaEnabled = false
+    
+    self.MiningToolName = CONFIG.Mining.ToolName
+    self.MiningTargetNames = table.concat(CONFIG.Mining.TargetNames, ", ")
+    self.MiningPriorityAreaScanRadius = CONFIG.Mining.MiningPriorityAreaScanRadius
+    self.MiningPriorityAreaEnabled = false
+    
+    self.AutoIgnoreEnabled = true
+    self.TeleportOnRespawnEnabled = true
+    self.AutoBlockEnabled = false
+    
+    self.PriorityAreas = {}
+    self.MiningPriorityAreas = {}
+    
+    self.UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2))
+    if self.MainGui and self.MainGui.MainFrame then
+        self.MainGui.MainFrame.Position = self.UIPosition
+    end
+
+    -- Delete the settings file
+    pcall(delfile, self.SettingsFile)
+    
+    -- Update GUI textboxes
+    if self.MainGui then
+        self.MainGui.CombatPage.ToolNameInput.Text = self.CombatToolName
+        self.MainGui.CombatPage.TargetNamesInput.Text = self.CombatTargetNames
+        self.MainGui.CombatPage.CombatPriorityRadiusInput.Text = self.CombatPriorityAreaScanRadius
+        
+        self.MainGui.MiningPage.ToolNameInput.Text = self.MiningToolName
+        self.MainGui.MiningPage.TargetNamesInput.Text = self.MiningTargetNames
+        self.MainGui.MiningPage.MiningPriorityRadiusInput.Text = self.MiningPriorityAreaScanRadius
+        
+        self:updateGUI() -- Update toggles
+    end
+    
+    print("[Multi-Bot Debug] All settings have been reset to default.")
+end
+
+
 -- GUI LOGIC & COMPONENTS
 
 function MultiGrinder:setMinimizedState(isMinimized)
@@ -754,6 +926,7 @@ function MultiGrinder:updateGUI()
     local ignoreButton = self.MainGui.GeneralPage.IgnoreButton 
     local autoIgnoreButton = self.MainGui.GeneralPage.AutoIgnoreButton 
     local tpRespawnButton = self.MainGui.GeneralPage.TeleportOnRespawnButton 
+    local autoBlockButton = self.MainGui.GeneralPage.AutoBlockButton -- ADDED: Auto-Block
     
     if self.Enabled then
         toggleButton.Text = "ON"
@@ -793,6 +966,15 @@ function MultiGrinder:updateGUI()
     else
         tpRespawnButton.Text = "TP on Respawn: OFF"
         tpRespawnButton.BackgroundColor3 = CONFIG.ToggleOffColor
+    end
+
+    -- ADDED: Auto-Block GUI update
+    if self.AutoBlockEnabled then
+        autoBlockButton.Text = "Auto-Block: ON"
+        autoBlockButton.BackgroundColor3 = CONFIG.ToggleOnColor
+    else
+        autoBlockButton.Text = "Auto-Block: OFF"
+        autoBlockButton.BackgroundColor3 = CONFIG.ToggleOffColor
     end
 
     local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
@@ -853,7 +1035,16 @@ function MultiGrinder:showTab(tabName)
     end
     
     if self.MainGui.Pages[tabName] then
-        self.MainGui.Pages[tabName].Visible = true
+        local page = self.MainGui.Pages[tabName]
+        page.Visible = true
+        
+        -- CHANGED: Update CanvasSize for ScrollingFrame
+        task.wait() -- Allow layout to update
+        local layout = page:FindFirstChildOfClass("UIListLayout")
+        if layout then
+            contentContainer.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 10) -- 10px padding
+        end
+        contentContainer.CanvasPosition = Vector2.new(0,0) -- Scroll to top
     end
 end
 
@@ -912,8 +1103,11 @@ end
 local function createContentPage(parent, name)
     local page = Instance.new("Frame")
     page.Name = name .. "Page"
-    page.Size = UDim2.new(1, 0, 1, 0)
-    page.BackgroundTransparency = 1 
+    -- CHANGED: Use AutomaticSize for height
+    page.Size = UDim2.new(1, 0, 0, 0) 
+    page.AutomaticSize = Enum.AutomaticSize.Y
+    page.BackgroundColor3 = CONFIG.BackgroundColor -- CHANGED: Page has background
+    page.BackgroundTransparency = 0
     page.Visible = false
     page.Parent = parent
     return page
@@ -1055,13 +1249,18 @@ function MultiGrinder:setupGUI()
         Tabs[tabName] = tabButton
     end
     
-    local ContentContainer = Instance.new("Frame")
+    -- CHANGED: ContentContainer is now a ScrollingFrame
+    local ContentContainer = Instance.new("ScrollingFrame")
     ContentContainer.Name = "ContentContainer"
     ContentContainer.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight + CONFIG.TabBarHeight) 
     ContentContainer.Size = UDim2.new(1, 0, 1, -(CONFIG.TitleBarHeight + CONFIG.TabBarHeight))
     ContentContainer.BackgroundColor3 = CONFIG.BackgroundColor
     ContentContainer.Parent = MainFrame
     ContentContainer.BorderSizePixel = 0
+    ContentContainer.BackgroundTransparency = 1 -- Pages will show background
+    ContentContainer.ScrollBarImageColor3 = CONFIG.AccentColor
+    ContentContainer.ScrollBarThickness = 6
+    ContentContainer.CanvasSize = UDim2.new(0, 0, 0, 0) -- Will be updated by showTab
     
     local Pages = {}
 
@@ -1176,6 +1375,28 @@ function MultiGrinder:setupGUI()
         self.TeleportOnRespawnEnabled = not self.TeleportOnRespawnEnabled
         self:updateGUI()
         print(string.format("[Multi-Bot Debug] Teleport on Respawn Toggled: %s", self.TeleportOnRespawnEnabled and "ON" or "OFF"))
+    end)
+
+    -- ADDED: Auto-Block button
+    local AutoBlockButton = createButton(GeneralPage, "Auto-Block: OFF", CONFIG.ToggleOffColor)
+    AutoBlockButton.Name = "AutoBlockButton"
+    AutoBlockButton.MouseButton1Click:Connect(function()
+        self.AutoBlockEnabled = not self.AutoBlockEnabled
+        self:updateGUI()
+        print(string.format("[Multi-Bot Debug] Auto-Block Toggled: %s", self.AutoBlockEnabled and "ON" or "OFF"))
+    end)
+
+    -- ADDED: Save/Reset Buttons
+    local SaveSettingsButton = createButton(GeneralPage, "Save Settings", CONFIG.AccentColor)
+    SaveSettingsButton.Name = "SaveSettingsButton"
+    SaveSettingsButton.MouseButton1Click:Connect(function()
+        self:SaveSettings()
+    end)
+    
+    local ResetSettingsButton = createButton(GeneralPage, "Reset All Settings", Color3.fromRGB(220, 120, 0)) -- Orange
+    ResetSettingsButton.Name = "ResetSettingsButton"
+    ResetSettingsButton.MouseButton1Click:Connect(function()
+        self:ResetSettings()
     end)
 
 
@@ -1413,6 +1634,9 @@ function MultiGrinder:setupGUI()
             ClearIgnoreButton = ClearIgnoreButton, 
             AutoIgnoreButton = AutoIgnoreButton, 
             TeleportOnRespawnButton = TeleportOnRespawnButton, 
+            AutoBlockButton = AutoBlockButton, -- ADDED: Auto-Block
+            SaveSettingsButton = SaveSettingsButton, -- ADDED
+            ResetSettingsButton = ResetSettingsButton -- ADDED
         },
         CombatPage = {
             ToolNameInput = CToolNameInput,
@@ -1458,6 +1682,15 @@ function MultiGrinder:start()
     
     self.LoopThread = task.spawn(function()
         while task.wait(CONFIG.FarmSpeed) do
+            
+            -- ADDED: Auto-Block logic, runs independently of main farm
+            if self.AutoBlockEnabled and self.Remotes.Block then
+                local args = { true }
+                pcall(function() -- Wrap in pcall for safety
+                    self.Remotes.Block:FireServer(unpack(args))
+                end)
+            end
+
             if self.Enabled then
                 local hrp = self:getHumanoidRootPart()
                 
